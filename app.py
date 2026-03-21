@@ -88,6 +88,7 @@ def _get_root_result() -> dict:
 _INTERNAL_CAT_NAMES = {
     "arborist merchandising root",
     "featured categories",
+    "self service",
     "カテゴリー別",
 }
 
