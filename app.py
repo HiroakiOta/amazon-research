@@ -124,7 +124,7 @@ def fetch_subcategories(category_id: str) -> list[dict]:
                 child_data = _find_in_result(child_result, child_id)
                 if child_data:
                     child_name = child_data.get("name", child_name)
-                    child_children_ids = child_data.get("children", [])
+                    child_children_ids = child_data.get("children") or []
                     child_has_children = len(child_children_ids) > 0
             except Exception:
                 pass
