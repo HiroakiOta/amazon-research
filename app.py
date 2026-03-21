@@ -419,5 +419,31 @@ def debug_category(category_id):
         return jsonify({"error": str(e), "traceback": traceback.format_exc()})
 
 
+@app.route("/api/debug/direct_lookup/<category_id>")
+def debug_direct_lookup(category_id):
+    """category_lookup を直接呼んだ結果を確認するデバッグ用エンドポイント"""
+    try:
+        api = get_api()
+        result = api.category_lookup(int(category_id), domain=config.DOMAIN)
+        key_count = len(result) if result else 0
+        keys_sample = [str(k) for k in list(result.keys())[:10]] if result else []
+        found = _find_in_result(result, category_id)
+        return jsonify({
+            "category_id": category_id,
+            "result_key_count": key_count,
+            "result_keys_sample": keys_sample,
+            "target_found": found is not None,
+            "target_data": {
+                "catId": found.get("catId") if found else None,
+                "name": found.get("name") if found else None,
+                "children_count": len(found.get("children", [])) if found else 0,
+                "children_first5": found.get("children", [])[:5] if found else [],
+            },
+            "fetch_subcategories_result": fetch_subcategories(category_id),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()})
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
