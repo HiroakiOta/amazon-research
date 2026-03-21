@@ -387,6 +387,9 @@ def get_products():
                     f"月間売上推定 ¥{monthly_revenue:,.0f} > ¥{config.MAX_MONTHLY_REVENUE:,}"
                 )
 
+            if monthly_revenue is None:
+                reject_reason.append("月間売上推定 計算不可")
+
             if reject_reason:
                 filtered_count += 1
                 continue
