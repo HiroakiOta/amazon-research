@@ -97,7 +97,7 @@ def fetch_subcategories(category_id: str) -> list[dict]:
         parent_result = {}
         parent_data = None
         try:
-            parent_result = api.category_lookup(int(category_id), domain=config.DOMAIN)
+            parent_result = api.category_lookup([int(category_id)], domain=config.DOMAIN)
             parent_data = _find_in_result(parent_result, category_id)
         except Exception:
             pass
@@ -424,7 +424,7 @@ def debug_direct_lookup(category_id):
     """category_lookup を直接呼んだ結果を確認するデバッグ用エンドポイント"""
     try:
         api = get_api()
-        result = api.category_lookup(int(category_id), domain=config.DOMAIN)
+        result = api.category_lookup([int(category_id)], domain=config.DOMAIN)
         key_count = len(result) if result else 0
         keys_sample = [str(k) for k in list(result.keys())[:10]] if result else []
         found = _find_in_result(result, category_id)
