@@ -33,6 +33,14 @@ ROOT_CATEGORIES_JP = [
     {"id": "561958",     "name": "DVD・ブルーレイ"},
 ]
 
+# 大カテゴリのID一覧（クリック時は商品取得せずサブカテゴリ表示）
+ROOT_CATEGORY_IDS = {
+    "2277721051", "3210991", "3828871", "13299531", "48892051",
+    "160384011", "14304371", "16333571", "352484011", "2127209051",
+    "2127212051", "465392", "2474017051", "86731051", "2017304051",
+    "2127211051", "2264620051", "2016930051", "637764", "561958",
+}
+
 _api_instance = None
 
 
@@ -263,6 +271,17 @@ def get_products():
     if not category_id or category_id == "0":
         return jsonify({"error": "category_id が指定されていません"}), 400
 
+    # 大カテゴリの場合はサブカテゴリ一覧を返す
+    if category_id in ROOT_CATEGORY_IDS:
+        subcategories = fetch_subcategories(category_id)
+        return jsonify({
+            "products": [],
+            "is_root_category": True,
+            "subcategories": subcategories,
+            "category_name": category_name,
+            "total": 0,
+        })
+
     try:
         api = get_api()
 
@@ -373,11 +392,10 @@ def get_products():
                 "monthly_sold": int(monthly_sold),
                 "monthly_revenue": int(monthly_revenue) if monthly_revenue is not None else None,
                 "amazon_url": f"https://www.amazon.co.jp/dp/{asin}",
-                "priority": priority,
             })
 
-        # 優先 (rank 51-100) を先頭に、次いでランク昇順
-        results.sort(key=lambda x: (0 if x["priority"] else 1, x["rank"] or 9999))
+        # ランク昇順で並べる
+        results.sort(key=lambda x: x["rank"] or 9999)
 
         return jsonify({
             "products": results,

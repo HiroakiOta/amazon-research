@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Amazon.co.jp リサーチツール</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", sans-serif;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+
+    /* ===== ヘッダー ===== */
+    header {
+      background: linear-gradient(135deg, #232f3e 0%, #37475a 100%);
+      color: #fff;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 8px rgba(0,0,0,.3);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    header h1 { font-size: 1.2rem; font-weight: 700; letter-spacing: .02em; }
+    header h1 span { color: #ff9900; }
+    #token-badge {
+      font-size: .8rem;
+      background: rgba(255,153,0,.15);
+      border: 1px solid rgba(255,153,0,.4);
+      color: #ffb347;
+      padding: 4px 12px;
+      border-radius: 20px;
+    }
+
+    /* ===== レイアウト ===== */
+    .container {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 0;
+      min-height: calc(100vh - 53px);
+    }
+
+    /* ===== サイドバー ===== */
+    .sidebar {
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      padding: 20px 0;
+      overflow-y: auto;
+      max-height: calc(100vh - 53px);
+      position: sticky;
+      top: 53px;
+    }
+    .sidebar h2 {
+      font-size: .85rem;
+      font-weight: 700;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      padding: 0 16px 10px;
+      border-bottom: 1px solid #eee;
+      margin-bottom: 8px;
+    }
+
+    /* カテゴリツリー */
+    .cat-list { list-style: none; }
+    .cat-item { position: relative; }
+    .cat-btn {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 9px 16px 9px 16px;
+      font-size: .9rem;
+      color: #333;
+      text-align: left;
+      transition: background .15s;
+      gap: 6px;
+    }
+    .cat-btn:hover { background: #f5f5f5; }
+    .cat-btn.active { background: #fff3e0; color: #e65100; font-weight: 600; }
+    .cat-btn .arrow {
+      font-size: .65rem;
+      color: #999;
+      transition: transform .2s;
+      flex-shrink: 0;
+    }
+    .cat-btn.expanded .arrow { transform: rotate(90deg); }
+    .cat-btn .icon { flex-shrink: 0; font-size: .9rem; }
+
+    /* サブカテゴリ */
+    .sub-list {
+      list-style: none;
+      display: none;
+      background: #fafafa;
+      border-left: 3px solid #ff9900;
+      margin-left: 16px;
+    }
+    .sub-list.open { display: block; }
+    .sub-list .cat-btn {
+      font-size: .85rem;
+      padding-left: 14px;
+      color: #555;
+    }
+    .sub-list .cat-btn:hover { background: #fff3e0; }
+
+    .loading-cats {
+      text-align: center;
+      padding: 10px;
+      color: #999;
+      font-size: .8rem;
+    }
+
+    /* ===== メインコンテンツ ===== */
+    .main {
+      padding: 24px;
+      overflow-y: auto;
+    }
+
+    /* 説明エリア */
+    .intro {
+      text-align: center;
+      padding: 60px 20px;
+      color: #888;
+    }
+    .intro .big-icon { font-size: 4rem; margin-bottom: 16px; }
+    .intro h2 { font-size: 1.3rem; color: #555; margin-bottom: 8px; }
+    .intro p { font-size: .9rem; line-height: 1.7; }
+
+    /* フィルター情報バー */
+    .filter-bar {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 10px;
+      padding: 14px 20px;
+      margin-bottom: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    .filter-bar .label { font-weight: 600; font-size: .85rem; color: #444; margin-right: 4px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: .78rem;
+      font-weight: 600;
+    }
+    .badge-blue  { background: #e3f2fd; color: #1565c0; }
+    .badge-green { background: #e8f5e9; color: #2e7d32; }
+    .badge-orange{ background: #fff3e0; color: #e65100; }
+    .badge-gray  { background: #f5f5f5; color: #666; }
+    .filter-bar .stat { margin-left: auto; font-size: .82rem; color: #888; }
+
+    /* ローディング */
+    .loading {
+      text-align: center;
+      padding: 60px 20px;
+    }
+    .spinner {
+      width: 44px; height: 44px;
+      border: 4px solid #eee;
+      border-top-color: #ff9900;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* エラー */
+    .error-box {
+      background: #fff3f3;
+      border: 1px solid #f5c6c6;
+      border-radius: 10px;
+      padding: 20px;
+      color: #c0392b;
+      font-size: .9rem;
+      white-space: pre-wrap;
+    }
+
+    /* メッセージ */
+    .empty-msg {
+      text-align: center;
+      padding: 60px 20px;
+      color: #888;
+      font-size: .95rem;
+    }
+
+    /* ===== 商品グリッド ===== */
+    .products-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .product-card {
+      background: #fff;
+      border-radius: 12px;
+      border: 1px solid #e8e8e8;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: transform .15s, box-shadow .15s;
+    }
+    .product-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 8px 24px rgba(0,0,0,.1);
+    }
+    .product-card.priority {
+      border-color: #ff9900;
+      box-shadow: 0 0 0 2px rgba(255,153,0,.25);
+    }
+
+    /* 優先バナー */
+    .priority-banner {
+      background: linear-gradient(90deg, #ff9900, #ffb347);
+      color: #fff;
+      font-size: .7rem;
+      font-weight: 700;
+      text-align: center;
+      padding: 4px;
+      letter-spacing: .05em;
+    }
+
+    /* サムネイル */
+    .product-img-wrap {
+      aspect-ratio: 1;
+      background: #f8f8f8;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .product-img-wrap img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .no-img {
+      font-size: 3rem;
+      color: #ddd;
+    }
+
+    /* 商品情報 */
+    .product-info {
+      padding: 12px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .product-title {
+      font-size: .83rem;
+      font-weight: 500;
+      color: #1a1a2e;
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .product-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: auto;
+    }
+    .meta-item {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    .meta-label { font-size: .65rem; color: #999; text-transform: uppercase; letter-spacing: .04em; }
+    .meta-value { font-size: .85rem; font-weight: 600; color: #333; }
+    .meta-value.price { color: #c0392b; font-size: .95rem; }
+    .meta-value.rank  { color: #1565c0; }
+
+    /* リンクボタン */
+    .product-link {
+      display: block;
+      margin: 8px 12px 12px;
+      padding: 8px;
+      background: #ff9900;
+      color: #fff;
+      text-align: center;
+      text-decoration: none;
+      border-radius: 6px;
+      font-size: .8rem;
+      font-weight: 700;
+      transition: background .15s;
+    }
+    .product-link:hover { background: #e68900; }
+
+    /* ===== ベストセラーなし時のサブカテゴリ選択 ===== */
+    .info-box {
+      background: #fff8e1;
+      border: 1px solid #ffe082;
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-bottom: 20px;
+      color: #6d4c00;
+      font-size: .9rem;
+      line-height: 1.6;
+    }
+    .info-box strong { display: block; margin-bottom: 6px; font-size: 1rem; }
+
+    .subcat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .subcat-btn {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: .9rem;
+      color: #333;
+      text-align: left;
+      transition: background .15s, border-color .15s, transform .1s;
+      gap: 8px;
+    }
+    .subcat-btn:hover {
+      background: #fff3e0;
+      border-color: #ff9900;
+      transform: translateY(-2px);
+    }
+    .subcat-btn .subcat-name { flex: 1; font-weight: 500; }
+    .subcat-btn .subcat-arrow { color: #ff9900; font-size: .75rem; flex-shrink: 0; }
+
+    /* ===== レスポンシブ ===== */
+    @media (max-width: 768px) {
+      .container { grid-template-columns: 1fr; }
+      .sidebar {
+        max-height: 260px;
+        position: static;
+        border-right: none;
+        border-bottom: 1px solid #e0e0e0;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Amazon.co.jp <span>リサーチツール</span></h1>
+  <div id="token-badge">トークン: 読込中...</div>
+</header>
+
+<div class="container">
+  <!-- ===== サイドバー ===== -->
+  <aside class="sidebar">
+    <h2>カテゴリ選択</h2>
+    <ul class="cat-list" id="root-cats">
+      <li><div class="loading-cats">読み込み中...</div></li>
+    </ul>
+  </aside>
+
+  <!-- ===== メイン ===== -->
+  <main class="main" id="main-content">
+    <div class="intro">
+      <div class="big-icon">🔍</div>
+      <h2>カテゴリを選択してください</h2>
+      <p>
+        左のカテゴリツリーからカテゴリ（またはサブカテゴリ）を選択すると、<br>
+        ベストセラー上位100件を取得し、条件に合う商品を表示します。
+      </p>
+      <br>
+      <p>
+        <span class="badge badge-green">✓ レビュー数 300件以下</span>&ensp;
+        <span class="badge badge-green">✓ 月間売上推定 100万円以下</span>&ensp;
+        <span class="badge badge-orange">★ ランク51〜100位 優先表示</span>
+      </p>
+    </div>
+  </main>
+</div>
+
+<script>
+// ===================================================================
+// ユーティリティ
+// ===================================================================
+const $ = id => document.getElementById(id);
+
+function fmt_price(p) {
+  if (p == null) return "—";
+  return "¥" + p.toLocaleString("ja-JP");
+}
+function fmt_num(n) {
+  if (n == null) return "—";
+  return n.toLocaleString("ja-JP");
+}
+
+// ===================================================================
+// トークン残高
+// ===================================================================
+async function loadTokens() {
+  try {
+    const res = await fetch("/api/tokens");
+    const data = await res.json();
+    if (data.tokens_left != null) {
+      $("token-badge").textContent = `残りトークン: ${data.tokens_left.toLocaleString()}`;
+    }
+  } catch (e) {
+    $("token-badge").textContent = "トークン取得失敗";
+  }
+}
+
+// ===================================================================
+// カテゴリツリー
+// ===================================================================
+async function loadCategories(parentId, listEl, indent = 0) {
+  listEl.innerHTML = '<li><div class="loading-cats">読み込み中...</div></li>';
+  try {
+    const res = await fetch(`/api/categories?parent_id=${parentId}`);
+    const data = await res.json();
+    const cats = data.categories || [];
+    listEl.innerHTML = "";
+
+    if (cats.length === 0) {
+      listEl.innerHTML = '<li><div class="loading-cats">サブカテゴリなし</div></li>';
+      return;
+    }
+
+    cats.forEach(cat => {
+      const li = document.createElement("li");
+      li.className = "cat-item";
+      li.dataset.id = cat.id;
+      li.dataset.name = cat.name;
+
+      const btn = document.createElement("button");
+      btn.className = "cat-btn";
+      btn.style.paddingLeft = (16 + indent * 14) + "px";
+
+      // 展開矢印（サブカテゴリありの場合）
+      let arrowHtml = cat.has_children !== false
+        ? '<span class="arrow">▶</span>'
+        : '<span class="arrow" style="opacity:0">▶</span>';
+
+      btn.innerHTML = `${arrowHtml}<span>${cat.name}</span>`;
+
+      let subList = null;
+      let loaded = false;
+
+      btn.addEventListener("click", async () => {
+        // 商品取得（常に実行）
+        fetchProducts(cat.id, cat.name);
+        setActiveBtn(btn);
+
+        // サブカテゴリ展開/折りたたみ
+        if (cat.has_children === false) return;
+
+        if (!loaded) {
+          btn.classList.add("expanded");
+          subList = document.createElement("ul");
+          subList.className = "sub-list open";
+          li.appendChild(subList);
+          await loadCategories(cat.id, subList, indent + 1);
+          loaded = true;
+        } else {
+          btn.classList.toggle("expanded");
+          subList.classList.toggle("open");
+        }
+      });
+
+      li.appendChild(btn);
+      listEl.appendChild(li);
+    });
+
+  } catch (e) {
+    listEl.innerHTML = `<li><div class="loading-cats" style="color:#c00">エラー: ${e.message}</div></li>`;
+  }
+}
+
+let _activeBtn = null;
+function setActiveBtn(btn) {
+  if (_activeBtn) _activeBtn.classList.remove("active");
+  btn.classList.add("active");
+  _activeBtn = btn;
+}
+
+// ===================================================================
+// 商品取得
+// ===================================================================
+async function fetchProducts(categoryId, categoryName) {
+  const main = $("main-content");
+
+  main.innerHTML = `
+    <div class="loading">
+      <div class="spinner"></div>
+      <p><strong>${categoryName}</strong> のベストセラーを取得中...</p>
+      <p style="font-size:.8rem;color:#aaa;margin-top:6px">最大100件 + 商品詳細を取得します。しばらくお待ちください。</p>
+    </div>`;
+
+  try {
+    const res = await fetch("/api/products", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category_id: categoryId, category_name: categoryName }),
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      main.innerHTML = `<div class="error-box"><strong>エラーが発生しました</strong>\n\n${data.error}\n\n${data.traceback || ""}</div>`;
+      return;
+    }
+
+    if (data.is_root_category) {
+      renderSubcategorySelector(data.subcategories, categoryName);
+      return;
+    }
+
+    if (data.message) {
+      if (data.subcategories && data.subcategories.length > 0) {
+        renderSubcategorySelector(data.subcategories, categoryName);
+      } else {
+        main.innerHTML = `<div class="empty-msg">ℹ️ ${escHtml(data.message)}</div>`;
+      }
+      return;
+    }
+
+    renderProducts(data, categoryName);
+    loadTokens(); // 使用後にトークン更新
+
+  } catch (e) {
+    main.innerHTML = `<div class="error-box">通信エラー: ${e.message}</div>`;
+  }
+}
+
+// ===================================================================
+// サブカテゴリ選択UI（ベストセラーなし時）
+// ===================================================================
+function renderSubcategorySelector(subcategories, parentName) {
+  const main = $("main-content");
+
+  let html = `
+    <div class="info-box">
+      <strong>📂 「${escHtml(parentName)}」のサブカテゴリを選択してください</strong>
+      サブカテゴリをクリックすると商品を取得します。
+    </div>
+    <div class="subcat-grid">`;
+
+  subcategories.forEach(cat => {
+    const arrow = cat.has_children ? '<span class="subcat-arrow">▶</span>' : '';
+    html += `
+      <button class="subcat-btn" onclick="fetchProducts('${escHtml(cat.id)}', '${escHtml(cat.name).replace(/'/g, "\\'")}')">
+        <span class="subcat-name">${escHtml(cat.name)}</span>
+        ${arrow}
+      </button>`;
+  });
+
+  html += '</div>';
+  main.innerHTML = html;
+}
+
+// ===================================================================
+// 商品描画
+// ===================================================================
+function renderProducts(data, categoryName) {
+  const main = $("main-content");
+  const { products, total, total_fetched, filtered_count } = data;
+
+  // フィルターバー
+  let filterHtml = `
+    <div class="filter-bar">
+      <span class="label">📂 ${categoryName}</span>
+      <span class="badge badge-blue">取得: ${total_fetched}件</span>
+      <span class="badge badge-green">条件一致: ${total}件</span>
+      <span class="badge badge-gray">フィルタ除外: ${filtered_count}件</span>
+      <span class="stat">フィルタ: レビュー≤300件 ／ 月間売上≤100万円</span>
+    </div>`;
+
+  if (products.length === 0) {
+    main.innerHTML = filterHtml + `<div class="empty-msg">条件に合う商品が見つかりませんでした。<br>別のカテゴリをお試しください。</div>`;
+    return;
+  }
+
+  // 商品カード
+  let cardsHtml = '<div class="products-grid">';
+
+  products.forEach(p => {
+    const imgHtml = p.image_url
+      ? `<img src="${p.image_url}" alt="${escHtml(p.title)}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=no-img>📦</div>'">`
+      : '<div class="no-img">📦</div>';
+
+    cardsHtml += `
+      <div class="product-card">
+        <div class="product-img-wrap">${imgHtml}</div>
+        <div class="product-info">
+          <div class="product-title" title="${escHtml(p.title)}">${escHtml(p.title)}</div>
+          <div class="product-meta">
+            <div class="meta-item">
+              <span class="meta-label">価格</span>
+              <span class="meta-value price">${fmt_price(p.price_jpy)}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">ランク</span>
+              <span class="meta-value rank">${p.rank != null ? '#' + fmt_num(p.rank) : '—'}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">レビュー</span>
+              <span class="meta-value">${fmt_num(p.review_count)}</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">月売上推定</span>
+              <span class="meta-value">${fmt_price(p.monthly_revenue)}</span>
+            </div>
+          </div>
+        </div>
+        <a class="product-link" href="${p.amazon_url}" target="_blank" rel="noopener">Amazon で見る →</a>
+      </div>`;
+  });
+
+  cardsHtml += '</div>';
+  main.innerHTML = filterHtml + cardsHtml;
+}
+
+function escHtml(s) {
+  return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+// ===================================================================
+// 初期化
+// ===================================================================
+window.addEventListener("DOMContentLoaded", () => {
+  loadTokens();
+  loadCategories(0, $("root-cats"));
+});
+</script>
+</body>
+</html>
