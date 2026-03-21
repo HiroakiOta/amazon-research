@@ -87,28 +87,15 @@ def _get_root_result() -> dict:
 def fetch_subcategories(category_id: str) -> list[dict]:
     """指定カテゴリのサブカテゴリ一覧を返す。エラー時は空リスト。
 
-    直接 category_lookup(category_id) で parent と children を取得する。
-    失敗時は category_lookup(0) のキャッシュにフォールバック。
+    親カテゴリを lookup して children ID を取得し、
+    各子カテゴリも個別に lookup して名前を取得する。
     """
     try:
         api = get_api()
 
-        # ① 直接 lookup を試みる（こちらのほうが children 情報が正確）
-        parent_result = {}
-        parent_data = None
-        try:
-            parent_result = api.category_lookup([int(category_id)], domain=config.DOMAIN)
-            parent_data = _find_in_result(parent_result, category_id)
-        except Exception:
-            pass
-
-        # ② 失敗したらルートキャッシュから探す
-        if not parent_data:
-            try:
-                root_result = _get_root_result()
-                parent_data = _find_in_result(root_result, category_id)
-            except Exception:
-                pass
+        # 親カテゴリを lookup
+        parent_result = api.category_lookup(int(category_id), domain=config.DOMAIN)
+        parent_data = _find_in_result(parent_result, category_id)
 
         if not parent_data:
             return []
@@ -117,24 +104,25 @@ def fetch_subcategories(category_id: str) -> list[dict]:
         if not children_ids:
             return []
 
-        # parent_result には children の情報も含まれていることが多い
         categories = []
         for child_id in children_ids[:30]:
-            child_data = _find_in_result(parent_result, child_id)
+            # 子カテゴリを個別に lookup して名前を取得
+            child_name = f"サブカテゴリ {child_id}"
+            child_has_children = False
+            try:
+                child_result = api.category_lookup(int(child_id), domain=config.DOMAIN)
+                child_data = _find_in_result(child_result, child_id)
+                if child_data:
+                    child_name = child_data.get("name", child_name)
+                    child_has_children = len(child_data.get("children", [])) > 0
+            except Exception:
+                pass
 
-            if child_data:
-                categories.append({
-                    "id": str(child_id),
-                    "name": child_data.get("name", f"カテゴリ {child_id}"),
-                    "has_children": len(child_data.get("children", [])) > 0,
-                })
-            else:
-                # 名前が取れなくても ID だけで追加（ベストセラー取得は可能）
-                categories.append({
-                    "id": str(child_id),
-                    "name": f"サブカテゴリ {child_id}",
-                    "has_children": False,
-                })
+            categories.append({
+                "id": str(child_id),
+                "name": child_name,
+                "has_children": child_has_children,
+            })
 
         return categories
     except Exception:
