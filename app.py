@@ -84,11 +84,20 @@ def _get_root_result() -> dict:
     return _root_cat_cache
 
 
+# 内部管理用カテゴリ名（これに該当する場合は子階層に自動的に潜る）
+_INTERNAL_CAT_NAMES = {
+    "arborist merchandising root",
+    "featured categories",
+    "カテゴリー別",
+}
+
 def fetch_subcategories(category_id: str) -> list[dict]:
     """指定カテゴリのサブカテゴリ一覧を返す。エラー時は空リスト。
 
     親カテゴリを lookup して children ID を取得し、
     各子カテゴリも個別に lookup して名前を取得する。
+    内部管理用カテゴリ（Arborist Merchandising Root 等）は自動的にスキップして
+    その子階層に潜る。
     """
     try:
         api = get_api()
@@ -106,23 +115,44 @@ def fetch_subcategories(category_id: str) -> list[dict]:
 
         categories = []
         for child_id in children_ids[:30]:
-            # 子カテゴリを個別に lookup して名前を取得
             child_name = f"サブカテゴリ {child_id}"
             child_has_children = False
+            child_children_ids = []
+
             try:
                 child_result = api.category_lookup(int(child_id), domain=config.DOMAIN)
                 child_data = _find_in_result(child_result, child_id)
                 if child_data:
                     child_name = child_data.get("name", child_name)
-                    child_has_children = len(child_data.get("children", [])) > 0
+                    child_children_ids = child_data.get("children", [])
+                    child_has_children = len(child_children_ids) > 0
             except Exception:
                 pass
 
-            categories.append({
-                "id": str(child_id),
-                "name": child_name,
-                "has_children": child_has_children,
-            })
+            # 内部管理用カテゴリの場合は子階層に潜る
+            if child_name.lower() in _INTERNAL_CAT_NAMES:
+                for grandchild_id in child_children_ids[:30]:
+                    gc_name = f"サブカテゴリ {grandchild_id}"
+                    gc_has_children = False
+                    try:
+                        gc_result = api.category_lookup(int(grandchild_id), domain=config.DOMAIN)
+                        gc_data = _find_in_result(gc_result, grandchild_id)
+                        if gc_data:
+                            gc_name = gc_data.get("name", gc_name)
+                            gc_has_children = len(gc_data.get("children", [])) > 0
+                    except Exception:
+                        pass
+                    categories.append({
+                        "id": str(grandchild_id),
+                        "name": gc_name,
+                        "has_children": gc_has_children,
+                    })
+            else:
+                categories.append({
+                    "id": str(child_id),
+                    "name": child_name,
+                    "has_children": child_has_children,
+                })
 
         return categories
     except Exception:
