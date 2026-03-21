@@ -457,8 +457,10 @@ async function loadCategories(parentId, listEl, indent = 0) {
       let loaded = false;
 
       btn.addEventListener("click", async () => {
-        // 商品取得（常に実行）
-        fetchProducts(cat.id, cat.name);
+        // 末端カテゴリのみ商品取得
+        if (cat.has_children === false) {
+          fetchProducts(cat.id, cat.name);
+        }
         setActiveBtn(btn);
 
         // サブカテゴリ展開/折りたたみ
