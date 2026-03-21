@@ -155,7 +155,10 @@ def fetch_subcategories(category_id: str) -> list[dict]:
                 })
 
         return categories
-    except Exception:
+    except Exception as e:
+        import traceback as tb
+        print(f"fetch_subcategories ERROR: {e}")
+        print(tb.format_exc())
         return []
 
 
