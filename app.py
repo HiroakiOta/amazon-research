@@ -1,3 +1,4 @@
+import json
 import math
 import traceback
 
@@ -315,6 +316,21 @@ def get_products():
             if not product:
                 continue
 
+            # === デバッグここから ===
+            if idx == 0:
+                debug_data = {
+                    "asin": product.get("asin"),
+                    "title": product.get("title"),
+                    "stats_parsed": product.get("stats_parsed"),
+                    "stats_current": (product.get("stats") or {}).get("current"),
+                    "monthlySold": product.get("monthlySold"),
+                    "data_keys": list((product.get("data") or {}).keys()),
+                }
+                print("=== DEBUG PRODUCT[0] ===")
+                print(json.dumps(debug_data, default=str, ensure_ascii=False, indent=2))
+                print("========================")
+            # === デバッグここまで ===
+
             asin = product.get("asin", "")
             title = product.get("title") or "商品名不明"
             images_csv = product.get("imagesCSV", "")
@@ -336,7 +352,7 @@ def get_products():
                 current: list = stats_raw.get("current") or []
                 if price_jpy is None:
                     raw = safe_get(current, 1) or safe_get(current, 0)
-                    price_jpy = raw / 100 if raw else None
+                    price_jpy = float(raw) if raw else None
                 if rank is None:
                     rank = safe_get(current, 3)
                 if review_count is None:
