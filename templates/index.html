@@ -302,6 +302,29 @@
     }
     .product-link:hover { background: #e68900; }
 
+    /* ===== お気に入りボタン ===== */
+    .fav-btn {
+      display: block;
+      width: calc(100% - 24px);
+      margin: 8px 12px 4px;
+      padding: 8px 0;
+      border-radius: 8px;
+      border: 2px solid #ff9900;
+      background: #fff;
+      color: #ff9900;
+      font-size: .85rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background .15s, color .15s;
+      text-align: center;
+    }
+    .fav-btn:hover { background: #fff3e0; }
+    .fav-btn.fav-active {
+      background: #ff9900;
+      color: #fff;
+    }
+    .fav-btn.fav-active:hover { background: #e68900; }
+
     /* ===== ベストセラーなし時のサブカテゴリ選択 ===== */
     .info-box {
       background: #fff8e1;
@@ -395,6 +418,13 @@
 // ユーティリティ
 // ===================================================================
 const $ = id => document.getElementById(id);
+
+// ===================================================================
+// グローバルキャッシュ
+// ===================================================================
+let currentCategoryId = null;
+let cachedProducts = [];
+let cachedCategoryName = "";
 
 function fmt_price(p) {
   if (p == null) return "—";
@@ -499,6 +529,12 @@ function setActiveBtn(btn) {
 // 商品取得
 // ===================================================================
 async function fetchProducts(categoryId, categoryName) {
+  // 同カテゴリ再選択時はキャッシュ済みデータにフィルタを再適用するだけ
+  if (categoryId === currentCategoryId && cachedProducts.length > 0) {
+    applyFilters();
+    return;
+  }
+
   const main = $("main-content");
 
   main.innerHTML = `
@@ -535,12 +571,40 @@ async function fetchProducts(categoryId, categoryName) {
       return;
     }
 
-    renderProducts(data, categoryName);
+    // キャッシュを更新
+    cachedProducts = data.all_products || data.products;
+    currentCategoryId = categoryId;
+    cachedCategoryName = categoryName;
+
+    renderProducts(data, categoryId, categoryName);
     loadTokens(); // 使用後にトークン更新
 
   } catch (e) {
     main.innerHTML = `<div class="error-box">通信エラー: ${e.message}</div>`;
   }
+}
+
+// ===================================================================
+// クライアントサイドフィルタ
+// ===================================================================
+function applyFilters() {
+  const minRev  = parseInt($("filter-min-revenue").value) || 0;
+  const maxRev  = parseInt($("filter-max-revenue").value) || 9999999;
+  const maxReview = parseInt($("filter-max-review").value) || 9999;
+  const filtered = cachedProducts.filter(p => {
+    if (p.monthly_revenue === null || p.monthly_revenue === undefined) return false;
+    if (p.monthly_revenue < minRev) return false;
+    if (p.monthly_revenue > maxRev) return false;
+    if (p.review_count !== null && p.review_count > maxReview) return false;
+    return true;
+  });
+  const fakeData = {
+    products: filtered,
+    total: filtered.length,
+    total_fetched: cachedProducts.length,
+    filtered_count: cachedProducts.length - filtered.length,
+  };
+  renderProducts(fakeData, cachedCategoryName);
 }
 
 // ===================================================================
@@ -570,28 +634,78 @@ function renderSubcategorySelector(subcategories, parentName) {
 }
 
 // ===================================================================
+// お気に入り管理
+// ===================================================================
+let _favorites = new Set();
+
+async function loadFavorites() {
+  try {
+    const res = await fetch("/api/favorites");
+    const data = await res.json();
+    _favorites = new Set((data.favorites || []).map(f => f.category_id));
+  } catch (e) {
+    // 失敗してもUIには影響させない
+  }
+}
+
+async function toggleFavorite(categoryId, categoryName, btn) {
+  const isFav = _favorites.has(categoryId);
+  try {
+    if (isFav) {
+      await fetch(`/api/favorites/${categoryId}`, { method: "DELETE" });
+      _favorites.delete(categoryId);
+      btn.textContent = "☆ お気に入り登録";
+      btn.classList.remove("fav-active");
+    } else {
+      await fetch("/api/favorites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category_id: categoryId, category_name: categoryName }),
+      });
+      _favorites.add(categoryId);
+      btn.textContent = "★ お気に入り登録済み";
+      btn.classList.add("fav-active");
+    }
+  } catch (e) {
+    alert("お気に入りの更新に失敗しました: " + e.message);
+  }
+}
+
+// ===================================================================
 // 商品描画
 // ===================================================================
-function renderProducts(data, categoryName) {
+function renderProducts(data, categoryId, categoryName) {
   const main = $("main-content");
-  const { products, total, total_fetched, filtered_count } = data;
+  const { products, total, total_fetched, filtered_count, from_cache } = data;
 
-  // フィルターバー
+  const cacheLabel = from_cache
+    ? '<span class="badge badge-gray">📦 キャッシュ</span>'
+    : '';
+
+  const isFav = _favorites.has(categoryId);
+  const favBtnHtml = `
+    <button class="fav-btn${isFav ? ' fav-active' : ''}"
+            id="fav-btn-main"
+            onclick="toggleFavorite('${escHtml(categoryId)}', '${escHtml(categoryName).replace(/'/g,"\\'")}', this)">
+      ${isFav ? '★ お気に入り登録済み' : '☆ お気に入り登録'}
+    </button>`;
+
   let filterHtml = `
     <div class="filter-bar">
-      <span class="label">📂 ${categoryName}</span>
+      <span class="label">📂 ${escHtml(categoryName)}</span>
       <span class="badge badge-blue">取得: ${total_fetched}件</span>
       <span class="badge badge-green">条件一致: ${total}件</span>
       <span class="badge badge-gray">フィルタ除外: ${filtered_count}件</span>
-      <span class="stat">フィルタ: レビュー≤300件 ／ 月間売上 10万円〜100万円</span>
-    </div>`;
+      ${cacheLabel}
+      <span class="stat">フィルタ: レビュー≤300件 ／ 月間売上10万〜100万円</span>
+    </div>
+    ${favBtnHtml}`;
 
   if (products.length === 0) {
     main.innerHTML = filterHtml + `<div class="empty-msg">条件に合う商品が見つかりませんでした。<br>別のカテゴリをお試しください。</div>`;
     return;
   }
 
-  // 商品カード
   let cardsHtml = '<div class="products-grid">';
 
   products.forEach(p => {
@@ -640,6 +754,7 @@ function escHtml(s) {
 // ===================================================================
 window.addEventListener("DOMContentLoaded", () => {
   loadTokens();
+  loadFavorites();
   loadCategories(0, $("root-cats"));
 });
 </script>

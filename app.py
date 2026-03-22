@@ -1,11 +1,15 @@
-import json
 import math
 import traceback
+import sqlite3
+import os
+from datetime import datetime
 
 from flask import Flask, jsonify, render_template, request
 
 import config
 import keepa
+
+DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
 
 app = Flask(__name__)
 
@@ -45,10 +49,33 @@ ROOT_CATEGORY_IDS = {
 _api_instance = None
 
 
+def init_db():
+    """SQLiteデータベースの初期化（テーブルがなければ作成）"""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_id TEXT, category_name TEXT, asin TEXT, title TEXT,
+        image_url TEXT, price_jpy INTEGER, review_count INTEGER,
+        rank INTEGER, monthly_sold INTEGER, monthly_revenue INTEGER,
+        amazon_url TEXT, fetched_at TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS batch_state (
+        id INTEGER PRIMARY KEY, last_index INTEGER DEFAULT 0, last_run TEXT)""")
+    cur.execute("INSERT OR IGNORE INTO batch_state (id, last_index) VALUES (1, 0)")
+    cur.execute("""CREATE TABLE IF NOT EXISTS favorite_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_id TEXT UNIQUE,
+        category_name TEXT,
+        added_at TEXT)""")
+    conn.commit()
+    conn.close()
+
+
 def get_api() -> keepa.Keepa:
     global _api_instance
     if _api_instance is None:
         _api_instance = keepa.Keepa(config.KEEPA_API_KEY)
+        _api_instance._timeout = 120
     return _api_instance
 
 
@@ -268,9 +295,55 @@ def get_products():
     body = request.get_json(force=True)
     category_id: str = str(body.get("category_id", ""))
     category_name: str = body.get("category_name", "")
+    min_revenue: int = int(body.get("min_revenue", config.MIN_MONTHLY_REVENUE))
+    max_revenue: int = int(body.get("max_revenue", config.MAX_MONTHLY_REVENUE))
+    max_reviews: int = int(body.get("max_reviews", config.MAX_REVIEW_COUNT))
 
     if not category_id or category_id == "0":
         return jsonify({"error": "category_id が指定されていません"}), 400
+
+    init_db()
+
+    # SQLiteキャッシュ確認（batch.pyで取得済みなら即座に返す）
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM products WHERE category_id=? LIMIT 1", (category_id,))
+        cached = cur.fetchone()
+        conn.close()
+        if cached:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("""SELECT asin, title, image_url, price_jpy, review_count,
+                           rank, monthly_sold, monthly_revenue, amazon_url
+                           FROM products WHERE category_id=?""", (category_id,))
+            rows = cur.fetchall()
+            conn.close()
+            all_products = []
+            for row in rows:
+                all_products.append({
+                    "asin": row[0], "title": row[1], "image_url": row[2],
+                    "price_jpy": row[3], "review_count": row[4],
+                    "rank": row[5], "monthly_sold": row[6],
+                    "monthly_revenue": row[7], "amazon_url": row[8],
+                })
+            results = [p for p in all_products
+                       if p["monthly_revenue"] is not None
+                       and p["monthly_revenue"] >= min_revenue
+                       and p["monthly_revenue"] <= max_revenue
+                       and (p["review_count"] is None or p["review_count"] <= max_reviews)]
+            results.sort(key=lambda x: x["rank"] or 9999)
+            return jsonify({
+                "products": results,
+                "all_products": all_products,
+                "total": len(results),
+                "total_fetched": len(all_products),
+                "filtered_count": len(all_products) - len(results),
+                "category_name": category_name,
+                "from_cache": True,
+            })
+    except Exception:
+        pass
 
     # 大カテゴリの場合はサブカテゴリ一覧を返す
     if category_id in ROOT_CATEGORY_IDS:
@@ -310,6 +383,7 @@ def get_products():
         )
 
         results = []
+        all_products = []
         filtered_count = 0
 
         for idx, product in enumerate(products_raw):
@@ -352,31 +426,8 @@ def get_products():
             # 月間売上推定
             monthly_revenue = estimate_monthly_revenue(monthly_sold, price_jpy, rank)
 
-            # --- フィルタリング ---
-            reject_reason = []
-
-            if review_count is not None and review_count > config.MAX_REVIEW_COUNT:
-                reject_reason.append(f"レビュー数 {review_count} > {config.MAX_REVIEW_COUNT}")
-
-            if monthly_revenue is not None and monthly_revenue > config.MAX_MONTHLY_REVENUE:
-                reject_reason.append(
-                    f"月間売上推定 ¥{monthly_revenue:,.0f} > ¥{config.MAX_MONTHLY_REVENUE:,}"
-                )
-
-            if monthly_revenue is None:
-                reject_reason.append("月間売上推定 計算不可")
-
-            if reject_reason:
-                filtered_count += 1
-                continue
-
-            # 優先フラグ: ランキング 51〜100位
-            priority = (
-                rank is not None
-                and config.PRIORITY_RANK_MIN <= rank <= config.PRIORITY_RANK_MAX
-            )
-
-            results.append({
+            # 共通フィールドを組み立て
+            product_dict = {
                 "asin": asin,
                 "title": title,
                 "image_url": build_image_url(images_csv),
@@ -387,17 +438,53 @@ def get_products():
                 "monthly_sold": int(monthly_sold),
                 "monthly_revenue": int(monthly_revenue) if monthly_revenue is not None else None,
                 "amazon_url": f"https://www.amazon.co.jp/dp/{asin}",
+            }
+
+            # フィルタ前の全商品リストに追加
+            all_products.append(product_dict)
+
+            # --- フィルタリング ---
+            # 月間売上が計算不可の商品は除外
+            if monthly_revenue is None:
+                filtered_count += 1
+                continue
+
+            if review_count is not None and review_count > config.MAX_REVIEW_COUNT:
+                filtered_count += 1
+                continue
+
+            if monthly_revenue > config.MAX_MONTHLY_REVENUE:
+                filtered_count += 1
+                continue
+
+            if monthly_revenue < config.MIN_MONTHLY_REVENUE:
+                filtered_count += 1
+                continue
+
+            results.append({
+                "asin": asin,
+                "title": title,
+                "image_url": build_image_url(images_csv),
+                "price_jpy": int(price_jpy) if price_jpy is not None else None,
+                "review_count": int(review_count) if review_count is not None else None,
+                "rank": int(rank) if rank is not None else None,
+                "bestseller_rank": bestseller_rank,
+                "monthly_sold": int(monthly_sold),
+                "monthly_revenue": int(monthly_revenue),
+                "amazon_url": f"https://www.amazon.co.jp/dp/{asin}",
             })
 
-        # ランク昇順で並べる
+        # ランク昇順
         results.sort(key=lambda x: x["rank"] or 9999)
 
         return jsonify({
             "products": results,
+            "all_products": results,
             "total": len(results),
             "total_fetched": len(products_raw),
             "filtered_count": filtered_count,
             "category_name": category_name,
+            "from_cache": False,
         })
 
     except RuntimeError as e:
@@ -478,6 +565,64 @@ def debug_direct_lookup(category_id):
         })
     except Exception as e:
         return jsonify({"error": str(e), "traceback": traceback.format_exc()})
+
+
+# ---------------------------------------------------------------------------
+# お気に入りカテゴリ API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/favorites", methods=["GET"])
+def get_favorites():
+    """お気に入りカテゴリ一覧を返す"""
+    init_db()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT category_id, category_name, added_at FROM favorite_categories ORDER BY added_at DESC")
+        rows = cur.fetchall()
+        conn.close()
+        return jsonify({
+            "favorites": [{"category_id": r[0], "category_name": r[1], "added_at": r[2]} for r in rows]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/favorites", methods=["POST"])
+def add_favorite():
+    """お気に入りカテゴリを登録する"""
+    init_db()
+    body = request.get_json(force=True)
+    category_id = str(body.get("category_id", ""))
+    category_name = str(body.get("category_name", ""))
+    if not category_id:
+        return jsonify({"error": "category_id が必要です"}), 400
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""INSERT OR REPLACE INTO favorite_categories
+                       (category_id, category_name, added_at) VALUES (?, ?, ?)""",
+                    (category_id, category_name, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "category_id": category_id, "category_name": category_name})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/favorites/<category_id>", methods=["DELETE"])
+def remove_favorite(category_id):
+    """お気に入りカテゴリを解除する"""
+    init_db()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM favorite_categories WHERE category_id=?", (category_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "category_id": category_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
