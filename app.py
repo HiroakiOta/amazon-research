@@ -67,6 +67,30 @@ def init_db():
         category_id TEXT UNIQUE,
         category_name TEXT,
         added_at TEXT)""")
+
+    # デフォルトお気に入り：テーブルが空の場合のみ挿入
+    cur.execute("SELECT COUNT(*) FROM favorite_categories")
+    if cur.fetchone()[0] == 0:
+        default_categories = [
+            ("14304371",   "スポーツ&アウトドア"),
+            ("160384011",  "ドラッグストア"),
+            ("2127209051", "パソコン・周辺機器"),
+            ("86731051",   "文房具・オフィス用品"),
+            ("2017304051", "車&バイク"),
+            ("13299531",   "おもちゃ&ゲーム"),
+            ("2277724051", "家電・カメラ"),
+            ("3828871",    "ホーム&キッチン"),
+            ("2127211051", "ペット用品"),
+            ("16333571",   "ベビー&マタニティ"),
+            ("352484011",  "ファッション"),
+            ("3445393051", "産業・研究開発用品"),
+        ]
+        now = datetime.now().isoformat()
+        for cat_id, cat_name in default_categories:
+            cur.execute("""INSERT OR IGNORE INTO favorite_categories
+                           (category_id, category_name, added_at) VALUES (?, ?, ?)""",
+                        (cat_id, cat_name, now))
+
     conn.commit()
     conn.close()
 
