@@ -85,7 +85,6 @@ def expand_to_leaf_categories(api, category_id, category_name, depth=0):
         if not result:
             return [{"id": category_id, "name": category_name}]
 
-        # 対象カテゴリのデータを取得
         cat_data = None
         cat_id_str = str(category_id)
         for k, v in result.items():
@@ -97,10 +96,8 @@ def expand_to_leaf_categories(api, category_id, category_name, depth=0):
 
         children = cat_data.get("children", [])
         if not children:
-            # 末端カテゴリ
             return [{"id": category_id, "name": category_name}]
 
-        # 内部管理カテゴリをスキップして子カテゴリを展開
         leaf_cats = []
         for child_id in children[:50]:
             child_data = result.get(str(child_id)) or result.get(child_id)
@@ -117,7 +114,6 @@ def expand_to_leaf_categories(api, category_id, category_name, depth=0):
 
             child_name = child_data.get("name", f"カテゴリ {child_id}")
 
-            # 内部管理カテゴリはスキップしてその子に潜る
             if child_name.lower() in _INTERNAL_CAT_NAMES:
                 leaf_cats.extend(
                     expand_to_leaf_categories(api, str(child_id), child_name, depth + 1)
@@ -126,12 +122,10 @@ def expand_to_leaf_categories(api, category_id, category_name, depth=0):
 
             child_children = child_data.get("children", [])
             if child_children:
-                # さらに子がいれば再帰
                 leaf_cats.extend(
                     expand_to_leaf_categories(api, str(child_id), child_name, depth + 1)
                 )
             else:
-                # 末端
                 leaf_cats.append({"id": str(child_id), "name": child_name})
 
         return leaf_cats if leaf_cats else [{"id": category_id, "name": category_name}]
@@ -207,7 +201,6 @@ def main():
         print("お気に入りカテゴリが登録されていません。ブラウザからカテゴリを登録してください。")
         return
 
-    # お気に入りカテゴリを末端まで展開
     print("カテゴリを末端まで展開中...")
     all_leaf_cats = []
     for fav in favorite_cats:
@@ -216,7 +209,6 @@ def main():
         print(f"    → {len(leaves)}件の末端カテゴリ")
         all_leaf_cats.extend(leaves)
 
-    # 重複除去
     seen = set()
     unique_leaf_cats = []
     for cat in all_leaf_cats:
