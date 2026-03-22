@@ -316,59 +316,35 @@ def get_products():
             if not product:
                 continue
 
-            # === デバッグここから ===
-            if idx == 0:
-                debug_data = {
-                    "asin": product.get("asin"),
-                    "title": product.get("title"),
-                    "stats_parsed": product.get("stats_parsed"),
-                    "stats_current": (product.get("stats") or {}).get("current"),
-                    "monthlySold": product.get("monthlySold"),
-                    "data_keys": list((product.get("data") or {}).keys()),
-                }
-                print("=== DEBUG PRODUCT[0] ===")
-                print(json.dumps(debug_data, default=str, ensure_ascii=False, indent=2))
-                print("========================")
-            # === デバッグここまで ===
-
             asin = product.get("asin", "")
             title = product.get("title") or "商品名不明"
             images_csv = product.get("imagesCSV", "")
             monthly_sold = product.get("monthlySold") or 0
 
             # --- 価格・ランク・レビュー数を取得 ---
-            # keepa ライブラリは stats=N 指定時に stats_parsed (名前付き辞書) を返す
-            # CSV type インデックス: 0=AMAZON価格, 1=NEW価格, 3=SALES, 16=RATING, 17=COUNT_REVIEWS
-            # stats_parsed の値: 価格は /100 済み (JPY単位), ランク・レビュー数はそのまま
             stats_parsed: dict = product.get("stats_parsed") or {}
 
-            price_jpy: float | None = stats_parsed.get("NEW") or stats_parsed.get("AMAZON")
-            rank: int | None = stats_parsed.get("SALES")
-            review_count: int | None = stats_parsed.get("COUNT_REVIEWS")
+            # stats_parsed はネスト構造: stats_parsed["current"], ["avg30"] など
+            sp_current = stats_parsed.get("current") or {}
+            sp_avg30   = stats_parsed.get("avg30")   or {}
+            sp_avg180  = stats_parsed.get("avg180")  or {}
+            sp_avg90   = stats_parsed.get("avg90")   or {}
 
-            # フォールバック①: stats.current (raw 配列) から直接読む
-            if price_jpy is None or rank is None or review_count is None:
-                stats_raw = product.get("stats") or {}
-                current: list = stats_raw.get("current") or []
-                if price_jpy is None:
-                    raw = safe_get(current, 1) or safe_get(current, 0)
-                    price_jpy = float(raw) if raw else None
-                if rank is None:
-                    rank = safe_get(current, 3)
-                if review_count is None:
-                    review_count = safe_get(current, 17)  # 17=COUNT_REVIEWS (16はRATING)
+            # ランク: current → avg30 → avg90 の順で取得
+            rank_raw = sp_current.get("SALES") or sp_avg30.get("SALES") or sp_avg90.get("SALES")
+            rank: int | None = int(rank_raw) if rank_raw and rank_raw > 0 else None
 
-            # フォールバック②: data['COUNT_REVIEWS'] 配列の末尾値
-            if review_count is None:
-                try:
-                    import numpy as np
-                    cr = (product.get("data") or {}).get("COUNT_REVIEWS")
-                    if cr is not None and len(cr) > 0:
-                        valid = cr[cr >= 0]
-                        if len(valid) > 0:
-                            review_count = int(valid[-1])
-                except Exception:
-                    pass
+            # レビュー数: current → avg30 の順で取得
+            rc_raw = sp_current.get("COUNT_REVIEWS") or sp_avg30.get("COUNT_REVIEWS")
+            review_count: int | None = int(rc_raw) if rc_raw and rc_raw > 0 else None
+
+            # 価格: current → avg30 → avg180 の順で取得し × 100 して円換算
+            price_raw = (
+                sp_current.get("NEW") or sp_current.get("AMAZON") or
+                sp_avg30.get("NEW")   or sp_avg30.get("AMAZON")   or
+                sp_avg180.get("NEW")  or sp_avg180.get("AMAZON")
+            )
+            price_jpy: float | None = round(price_raw * 100) if price_raw and price_raw > 0 else None
 
             # ベストセラーリスト上の順位 (1-based)
             bestseller_rank = idx + 1
