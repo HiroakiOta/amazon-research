@@ -1,8 +1,9 @@
 import math
 import traceback
 import sqlite3
+import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import Flask, jsonify, render_template, request
 
@@ -17,33 +18,33 @@ app = Flask(__name__)
 # category_lookup(0, domain="JP") で取得可能だが、トークン節約のためハードコード
 ROOT_CATEGORIES_JP = [
     {"id": "2277721051", "name": "食品・飲料・お酒"},
-    {"id": "3210991",    "name": "エレクトロニクス"},
+    {"id": "3210981",    "name": "エレクトロニクス"},
     {"id": "3828871",    "name": "ホーム&キッチン"},
     {"id": "13299531",   "name": "おもちゃ&ゲーム"},
-    {"id": "48892051",   "name": "ビューティー"},
-    {"id": "14304371",   "name": "ドラッグストア"},
-    {"id": "2016926051", "name": "スポーツ&アウトドア"},
-    {"id": "16333571",   "name": "ベビー&マタニティ"},
-    {"id": "352484011",  "name": "服&ファッション小物"},
-    {"id": "2123629051", "name": "パソコン・周辺機器"},
-    {"id": "2127212051", "name": "カメラ"},
+    {"id": "52374051",   "name": "ビューティー"},
+    {"id": "160384011",  "name": "ドラッグストア"},
+    {"id": "14304371",   "name": "スポーツ&アウトドア"},
+    {"id": "344845011",  "name": "ベビー&マタニティ"},
+    {"id": "2229202051", "name": "ファッション"},
+    {"id": "2127209051", "name": "パソコン・周辺機器"},
+    {"id": "3210981",    "name": "カメラ"},
     {"id": "465392",     "name": "本・コミック・雑誌"},
-    {"id": "2474017051", "name": "TVゲーム"},
+    {"id": "637394",     "name": "TVゲーム"},
     {"id": "86731051",   "name": "文房具・オフィス用品"},
     {"id": "2017304051", "name": "車&バイク"},
-    {"id": "2127211051", "name": "ペット用品"},
-    {"id": "2264620051", "name": "DIY・工具・ガーデン"},
-    {"id": "2016930051", "name": "楽器"},
-    {"id": "637764",     "name": "ミュージック"},
+    {"id": "2127212051", "name": "ペット用品"},
+    {"id": "2016929051", "name": "DIY・工具・ガーデン"},
+    {"id": "561956",     "name": "ミュージック"},
     {"id": "561958",     "name": "DVD・ブルーレイ"},
+    {"id": "3445393051", "name": "産業・研究開発用品"},
 ]
 
 # 大カテゴリのID一覧（クリック時は商品取得せずサブカテゴリ表示）
 ROOT_CATEGORY_IDS = {
-    "2277721051", "3210991", "3828871", "13299531", "48892051",
-    "160384011", "14304371", "16333571", "352484011", "2127209051",
-    "2127212051", "465392", "2474017051", "86731051", "2017304051",
-    "2127211051", "2264620051", "2016930051", "637764", "561958",
+    "2277721051", "3210981", "3828871", "13299531", "52374051",
+    "160384011", "14304371", "344845011", "2229202051", "2127209051",
+    "465392", "637394", "86731051", "2017304051",
+    "2127212051", "2016929051", "561956", "561958", "3445393051",
 }
 
 _api_instance = None
@@ -55,10 +56,16 @@ def init_db():
     cur = conn.cursor()
     cur.execute("""CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        category_id TEXT, category_name TEXT, asin TEXT, title TEXT,
+        category_id TEXT, category_name TEXT, asin TEXT, parent_asin TEXT, title TEXT,
         image_url TEXT, price_jpy INTEGER, review_count INTEGER,
         rank INTEGER, monthly_sold INTEGER, monthly_revenue INTEGER,
         amazon_url TEXT, fetched_at TEXT)""")
+    # 既存テーブルへの列追加（初回のみ実行、エラーは無視）
+    for col in ["parent_asin TEXT", "category_tree_json TEXT", "leaf_rank INTEGER"]:
+        try:
+            cur.execute(f"ALTER TABLE products ADD COLUMN {col}")
+        except Exception:
+            pass
     cur.execute("""CREATE TABLE IF NOT EXISTS batch_state (
         id INTEGER PRIMARY KEY, last_index INTEGER DEFAULT 0, last_run TEXT)""")
     cur.execute("INSERT OR IGNORE INTO batch_state (id, last_index) VALUES (1, 0)")
@@ -67,23 +74,17 @@ def init_db():
         category_id TEXT UNIQUE,
         category_name TEXT,
         added_at TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS category_lookup_cache (
+        category_id TEXT PRIMARY KEY,
+        result_json TEXT,
+        cached_at TEXT)""")
 
     # デフォルトお気に入り：テーブルが空の場合のみ挿入
     cur.execute("SELECT COUNT(*) FROM favorite_categories")
     if cur.fetchone()[0] == 0:
         default_categories = [
             ("14304371",   "スポーツ&アウトドア"),
-            ("160384011",  "ドラッグストア"),
-            ("2127209051", "パソコン・周辺機器"),
-            ("86731051",   "文房具・オフィス用品"),
-            ("2017304051", "車&バイク"),
-            ("13299531",   "おもちゃ&ゲーム"),
-            ("2277724051", "家電・カメラ"),
-            ("3828871",    "ホーム&キッチン"),
-            ("2127211051", "ペット用品"),
-            ("16333571",   "ベビー&マタニティ"),
-            ("352484011",  "ファッション"),
-            ("3445393051", "産業・研究開発用品"),
+            ("2016929051", "DIY・工具・ガーデン"),
         ]
         now = datetime.now().isoformat()
         for cat_id, cat_name in default_categories:
@@ -131,17 +132,56 @@ def _find_in_result(result: dict, category_id) -> dict | None:
     return None
 
 
-_root_cat_cache: dict = {}   # category_lookup(0) の結果をキャッシュ
+_cat_lookup_cache: dict = {}      # L1: インメモリキャッシュ（category_id → result）
+
+CAT_CACHE_TTL_DAYS = 7            # SQLiteキャッシュの有効期間
+
+
+def _cached_category_lookup(category_id: int) -> dict:
+    """category_lookup の結果を L1（メモリ）→ L2（SQLite）→ API の順で取得・キャッシュする。"""
+    key = str(category_id)
+
+    # L1: メモリキャッシュ
+    if key in _cat_lookup_cache:
+        return _cat_lookup_cache[key]
+
+    # L2: SQLiteキャッシュ
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT result_json, cached_at FROM category_lookup_cache WHERE category_id=?", (key,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            cached_at = datetime.fromisoformat(row[1])
+            if datetime.now() - cached_at < timedelta(days=CAT_CACHE_TTL_DAYS):
+                result = json.loads(row[0])
+                _cat_lookup_cache[key] = result
+                return result
+    except Exception:
+        pass
+
+    # API呼び出し
+    result = get_api().category_lookup(category_id, domain=config.DOMAIN)
+    _cat_lookup_cache[key] = result
+
+    # SQLiteに保存
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""INSERT OR REPLACE INTO category_lookup_cache (category_id, result_json, cached_at)
+                       VALUES (?, ?, ?)""", (key, json.dumps(result), datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+    return result
 
 
 def _get_root_result() -> dict:
-    """category_lookup(0, domain=JP) の結果をキャッシュして返す。
-    JP ドメインで特定 ID を直接 lookup すると空が返る場合でも
-    id=0 ならルートカテゴリ一覧が確実に返る。"""
-    global _root_cat_cache
-    if not _root_cat_cache:
-        _root_cat_cache = get_api().category_lookup(0, domain=config.DOMAIN)
-    return _root_cat_cache
+    """category_lookup(0, domain=JP) をキャッシュして返す。"""
+    return _cached_category_lookup(0)
 
 
 # 内部管理用カテゴリ名（これに該当する場合は子階層に自動的に潜る）
@@ -155,16 +195,25 @@ _INTERNAL_CAT_NAMES = {
 def fetch_subcategories(category_id: str) -> list[dict]:
     """指定カテゴリのサブカテゴリ一覧を返す。エラー時は空リスト。
 
-    親カテゴリを lookup して children ID を取得し、
-    各子カテゴリも個別に lookup して名前を取得する。
+    親のlookup結果に子データが含まれていれば再利用し（APIコール節約）、
+    含まれていない子のみ個別lookupする。結果はインメモリキャッシュに保存。
     内部管理用カテゴリ（Arborist Merchandising Root 等）は自動的にスキップして
     その子階層に潜る。
     """
-    try:
-        api = get_api()
+    def _resolve_cat(cat_id, parent_result: dict):
+        """parent_result から cat_id のデータを探し、なければキャッシュlookupする。"""
+        data = _find_in_result(parent_result, cat_id)
+        if not data:
+            try:
+                result = _cached_category_lookup(int(cat_id))
+                data = _find_in_result(result, cat_id)
+            except Exception:
+                pass
+        return data
 
-        # 親カテゴリを lookup
-        parent_result = api.category_lookup(int(category_id), domain=config.DOMAIN)
+    try:
+        # 親カテゴリを lookup（キャッシュ利用）
+        parent_result = _cached_category_lookup(int(category_id))
         parent_data = _find_in_result(parent_result, category_id)
 
         if not parent_data:
@@ -176,33 +225,18 @@ def fetch_subcategories(category_id: str) -> list[dict]:
 
         categories = []
         for child_id in children_ids[:30]:
-            child_name = f"サブカテゴリ {child_id}"
-            child_has_children = False
-            child_children_ids = []
+            child_data = _resolve_cat(child_id, parent_result)
+            child_name = (child_data.get("name") if child_data else None) or f"サブカテゴリ {child_id}"
+            child_children_ids = (child_data.get("children") or []) if child_data else []
+            child_has_children = len(child_children_ids) > 0
 
-            try:
-                child_result = api.category_lookup(int(child_id), domain=config.DOMAIN)
-                child_data = _find_in_result(child_result, child_id)
-                if child_data:
-                    child_name = child_data.get("name", child_name)
-                    child_children_ids = child_data.get("children") or []
-                    child_has_children = len(child_children_ids) > 0
-            except Exception:
-                pass
-
-            # 内部管理用カテゴリの場合は子階層に潜る
+            # 内部管理用カテゴリの場合は子階層に潜る（追加lookupは1回のみ）
             if child_name.lower() in _INTERNAL_CAT_NAMES:
+                child_result = _cached_category_lookup(int(child_id)) if child_data is None else parent_result
                 for grandchild_id in child_children_ids[:30]:
-                    gc_name = f"サブカテゴリ {grandchild_id}"
-                    gc_has_children = False
-                    try:
-                        gc_result = api.category_lookup(int(grandchild_id), domain=config.DOMAIN)
-                        gc_data = _find_in_result(gc_result, grandchild_id)
-                        if gc_data:
-                            gc_name = gc_data.get("name", gc_name)
-                            gc_has_children = len(gc_data.get("children", [])) > 0
-                    except Exception:
-                        pass
+                    gc_data = _resolve_cat(grandchild_id, child_result)
+                    gc_name = (gc_data.get("name") if gc_data else None) or f"サブカテゴリ {grandchild_id}"
+                    gc_has_children = len((gc_data.get("children") or []) if gc_data else []) > 0
                     categories.append({
                         "id": str(grandchild_id),
                         "name": gc_name,
@@ -235,6 +269,15 @@ def safe_get(lst, idx, default=None):
     except (IndexError, TypeError):
         return default
 
+
+PARENT_REVENUE_CTE = """
+    WITH parent_revenue AS (
+        SELECT COALESCE(parent_asin, asin) AS p_asin,
+               SUM(monthly_revenue) AS total_revenue
+        FROM products
+        GROUP BY p_asin
+    )
+"""
 
 def estimate_monthly_revenue(monthly_sold: int, price_jpy: float, rank: int) -> float | None:
     """
@@ -321,7 +364,7 @@ def get_products():
     category_name: str = body.get("category_name", "")
     min_revenue: int = int(body.get("min_revenue", config.MIN_MONTHLY_REVENUE))
     max_revenue: int = int(body.get("max_revenue", config.MAX_MONTHLY_REVENUE))
-    max_reviews: int = int(body.get("max_reviews", config.MAX_REVIEW_COUNT))
+    max_reviews = body.get("max_reviews")  # None = 上限なし
 
     if not category_id or category_id == "0":
         return jsonify({"error": "category_id が指定されていません"}), 400
@@ -338,9 +381,15 @@ def get_products():
         if cached:
             conn = sqlite3.connect(DB_PATH)
             cur = conn.cursor()
-            cur.execute("""SELECT asin, title, image_url, price_jpy, review_count,
-                           rank, monthly_sold, monthly_revenue, amazon_url
-                           FROM products WHERE category_id=?""", (category_id,))
+            # 親ASIN単位の売上合算でフィルタ
+            cur.execute(PARENT_REVENUE_CTE + """
+                SELECT p.asin, p.title, p.image_url, p.price_jpy, p.review_count,
+                       p.rank, p.monthly_sold, p.monthly_revenue, p.amazon_url,
+                       COALESCE(p.parent_asin, p.asin) AS p_asin, pr.total_revenue
+                FROM products p
+                JOIN parent_revenue pr ON COALESCE(p.parent_asin, p.asin) = pr.p_asin
+                WHERE p.category_id=?
+            """, (category_id,))
             rows = cur.fetchall()
             conn.close()
             all_products = []
@@ -350,12 +399,13 @@ def get_products():
                     "price_jpy": row[3], "review_count": row[4],
                     "rank": row[5], "monthly_sold": row[6],
                     "monthly_revenue": row[7], "amazon_url": row[8],
+                    "parent_asin": row[9], "parent_revenue": row[10],
                 })
             results = [p for p in all_products
-                       if p["monthly_revenue"] is not None
-                       and p["monthly_revenue"] >= min_revenue
-                       and p["monthly_revenue"] <= max_revenue
-                       and (p["review_count"] is None or p["review_count"] <= max_reviews)]
+                       if p["parent_revenue"] is not None
+                       and p["parent_revenue"] >= min_revenue
+                       and p["parent_revenue"] <= max_revenue
+                       and (max_reviews is None or p["review_count"] is None or p["review_count"] <= max_reviews)]
             results.sort(key=lambda x: x["rank"] or 9999)
             return jsonify({
                 "products": results,
@@ -473,7 +523,7 @@ def get_products():
                 filtered_count += 1
                 continue
 
-            if review_count is not None and review_count > config.MAX_REVIEW_COUNT:
+            if config.MAX_REVIEW_COUNT is not None and review_count is not None and review_count > config.MAX_REVIEW_COUNT:
                 filtered_count += 1
                 continue
 
@@ -632,6 +682,85 @@ def add_favorite():
         return jsonify({"success": True, "category_id": category_id, "category_name": category_name})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/export/csv", methods=["GET"])
+def export_csv():
+    """フィルタ済み全商品をCSV形式でダウンロードする。
+    クエリパラメータ: min_revenue, max_revenue, min_price
+    """
+    import io, csv
+    from flask import Response
+
+    init_db()
+    min_revenue = int(request.args.get("min_revenue", config.MIN_MONTHLY_REVENUE))
+    max_revenue = int(request.args.get("max_revenue", config.MAX_MONTHLY_REVENUE))
+    min_price   = int(request.args.get("min_price", 0))
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute(PARENT_REVENUE_CTE + """
+            SELECT p.category_name, p.category_tree_json,
+                   p.asin, COALESCE(p.parent_asin, p.asin), p.title,
+                   p.price_jpy, p.review_count, p.rank, p.leaf_rank,
+                   p.monthly_sold, p.monthly_revenue, pr.total_revenue,
+                   p.amazon_url, p.fetched_at
+            FROM products p
+            JOIN parent_revenue pr ON COALESCE(p.parent_asin, p.asin) = pr.p_asin
+            WHERE pr.total_revenue BETWEEN ? AND ?
+              AND (? = 0 OR p.price_jpy IS NULL OR p.price_jpy >= ?)
+            ORDER BY p.category_name, pr.total_revenue DESC
+        """, (min_revenue, max_revenue, min_price, min_price))
+        rows = cur.fetchall()
+        conn.close()
+
+        if config.MAX_REVIEW_COUNT is not None:
+            rows = [r for r in rows if r[6] is None or r[6] <= config.MAX_REVIEW_COUNT]
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    def parse_tree(tree_json, root_name):
+        """categoryTree JSON からカテゴリパスと末端カテゴリ名を返す。"""
+        if not tree_json:
+            return root_name, root_name
+        try:
+            tree = json.loads(tree_json)
+            names = [node.get("name", "") for node in tree if node.get("name")]
+            if not names:
+                return root_name, root_name
+            return " > ".join(names), names[-1]
+        except Exception:
+            return root_name, root_name
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    output.write("\ufeff")
+    writer.writerow(["大カテゴリ", "カテゴリパス", "末端カテゴリ",
+                     "ASIN", "親ASIN", "商品名", "価格(円)", "レビュー数",
+                     "大カテゴリランク", "末端カテゴリランク",
+                     "月間販売数", "月間売上推定(円)", "親ASIN合算売上(円)",
+                     "AmazonURL", "取得日時"])
+    for r in rows:
+        root_name = r[0]
+        tree_json  = r[1]
+        cat_path, leaf_cat = parse_tree(tree_json, root_name)
+        # r: category_name, tree_json, asin, parent_asin, title,
+        #    price_jpy, review_count, rank, leaf_rank,
+        #    monthly_sold, monthly_revenue, total_revenue, amazon_url, fetched_at
+        writer.writerow([root_name, cat_path, leaf_cat,
+                         r[2], r[3], r[4], r[5], r[6],
+                         r[7], r[8],
+                         r[9], r[10], r[11], r[12], r[13]])
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    filename = f"amazon_research_{today}.csv"
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+    )
 
 
 @app.route("/api/favorites/<category_id>", methods=["DELETE"])

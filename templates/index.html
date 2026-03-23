@@ -29,6 +29,20 @@
     }
     header h1 { font-size: 1.2rem; font-weight: 700; letter-spacing: .02em; }
     header h1 span { color: #ff9900; }
+    #price-filter-wrap {
+      display: flex; align-items: center; gap: 6px; font-size: .82rem; color: #ddd;
+    }
+    #price-filter-wrap label { white-space: nowrap; }
+    #min-price-input {
+      width: 90px; padding: 4px 8px; border-radius: 6px; border: 1px solid #555;
+      background: #2a3a4a; color: #fff; font-size: .82rem; text-align: right;
+    }
+    #export-all-btn {
+      padding: 6px 14px; font-size: .82rem; font-weight: 600;
+      background: #ff9900; color: #1a1a2e; border: none;
+      border-radius: 6px; cursor: pointer; white-space: nowrap;
+    }
+    #export-all-btn:hover { background: #ffb347; }
     #token-badge {
       font-size: .8rem;
       background: rgba(255,153,0,.15);
@@ -160,7 +174,13 @@
     .badge-green { background: #e8f5e9; color: #2e7d32; }
     .badge-orange{ background: #fff3e0; color: #e65100; }
     .badge-gray  { background: #f5f5f5; color: #666; }
-    .filter-bar .stat { margin-left: auto; font-size: .82rem; color: #888; }
+    .filter-bar .stat { font-size: .82rem; color: #888; }
+    .dl-btn {
+      margin-left: auto; padding: 4px 12px; font-size: .82rem;
+      background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7;
+      border-radius: 6px; cursor: pointer; white-space: nowrap;
+    }
+    .dl-btn:hover { background: #c8e6c9; }
 
     /* ローディング */
     .loading {
@@ -382,6 +402,12 @@
 
 <header>
   <h1>Amazon.co.jp <span>リサーチツール</span></h1>
+  <div id="price-filter-wrap">
+    <label for="min-price-input">単価下限</label>
+    <input id="min-price-input" type="number" min="0" step="100" placeholder="0" value="0">
+    <span>円以上</span>
+  </div>
+  <button id="export-all-btn" onclick="exportAllCSV()">⬇ 全カテゴリ一括ダウンロード</button>
   <div id="token-badge">トークン: 読込中...</div>
 </header>
 
@@ -677,6 +703,8 @@ async function toggleFavorite(categoryId, categoryName, btn) {
 function renderProducts(data, categoryId, categoryName) {
   const main = $("main-content");
   const { products, total, total_fetched, filtered_count, from_cache } = data;
+  _currentProducts = products;
+  _currentCategoryName = categoryName;
 
   const cacheLabel = from_cache
     ? '<span class="badge badge-gray">📦 キャッシュ</span>'
@@ -697,7 +725,8 @@ function renderProducts(data, categoryId, categoryName) {
       <span class="badge badge-green">条件一致: ${total}件</span>
       <span class="badge badge-gray">フィルタ除外: ${filtered_count}件</span>
       ${cacheLabel}
-      <span class="stat">フィルタ: レビュー≤300件 ／ 月間売上10万〜100万円</span>
+      <span class="stat">フィルタ: 月間売上10万〜100万円</span>
+      <button class="dl-btn" onclick="downloadCSV()">CSV ダウンロード</button>
     </div>
     ${favBtnHtml}`;
 
@@ -706,12 +735,27 @@ function renderProducts(data, categoryId, categoryName) {
     return;
   }
 
-  let cardsHtml = '<div class="products-grid">';
+  main.innerHTML = filterHtml + '<div id="products-grid-wrap"></div>';
+  renderProductCards(products);
+}
 
+function renderProductCards(products) {
+  const wrap = document.getElementById("products-grid-wrap");
+  if (!wrap) return;
+
+  if (products.length === 0) {
+    wrap.innerHTML = '<div class="empty-msg">条件に合う商品が見つかりませんでした。</div>';
+    return;
+  }
+
+  let cardsHtml = '<div class="products-grid">';
   products.forEach(p => {
     const imgHtml = p.image_url
       ? `<img src="${p.image_url}" alt="${escHtml(p.title)}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=no-img>📦</div>'">`
       : '<div class="no-img">📦</div>';
+    const leafRankHtml = p.leaf_rank != null
+      ? `<div class="meta-item"><span class="meta-label">末端ランク</span><span class="meta-value rank">#${fmt_num(p.leaf_rank)}</span></div>`
+      : '';
 
     cardsHtml += `
       <div class="product-card">
@@ -724,9 +768,10 @@ function renderProducts(data, categoryId, categoryName) {
               <span class="meta-value price">${fmt_price(p.price_jpy)}</span>
             </div>
             <div class="meta-item">
-              <span class="meta-label">ランク</span>
+              <span class="meta-label">大カテゴリランク</span>
               <span class="meta-value rank">${p.rank != null ? '#' + fmt_num(p.rank) : '—'}</span>
             </div>
+            ${leafRankHtml}
             <div class="meta-item">
               <span class="meta-label">レビュー</span>
               <span class="meta-value">${fmt_num(p.review_count)}</span>
@@ -742,7 +787,56 @@ function renderProducts(data, categoryId, categoryName) {
   });
 
   cardsHtml += '</div>';
-  main.innerHTML = filterHtml + cardsHtml;
+  wrap.innerHTML = cardsHtml;
+}
+
+let _currentProducts = [];
+let _currentCategoryName = "";
+
+function getMinPrice() {
+  return parseInt(document.getElementById("min-price-input").value || "0", 10) || 0;
+}
+
+function exportAllCSV() {
+  const minPrice = getMinPrice();
+  window.location.href = `/api/export/csv${minPrice > 0 ? "?min_price=" + minPrice : ""}`;
+}
+
+// 価格フィルタ変更時に表示中の商品を再フィルタ
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("min-price-input").addEventListener("input", () => {
+    if (_currentProducts.length > 0) applyPriceFilter();
+  });
+});
+
+function applyPriceFilter() {
+  const minPrice = getMinPrice();
+  const filtered = minPrice > 0
+    ? _currentProducts.filter(p => p.price_jpy == null || p.price_jpy >= minPrice)
+    : _currentProducts;
+  renderProductCards(filtered);
+}
+
+function downloadCSV() {
+  if (!_currentProducts.length) return;
+  const headers = ["ASIN", "商品名", "価格(円)", "レビュー数", "ランク", "月間売上推定(円)", "AmazonURL"];
+  const rows = _currentProducts.map(p => [
+    p.asin,
+    `"${(p.title || "").replace(/"/g, '""')}"`,
+    p.price_jpy ?? "",
+    p.review_count ?? "",
+    p.rank ?? "",
+    p.monthly_revenue ?? "",
+    p.amazon_url,
+  ]);
+  const csv = "\uFEFF" + [headers, ...rows].map(r => r.join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${_currentCategoryName}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function escHtml(s) {
