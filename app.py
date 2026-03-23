@@ -314,7 +314,7 @@ def get_products():
     category_name: str = body.get("category_name", "")
     min_revenue: int = int(body.get("min_revenue", config.MIN_MONTHLY_REVENUE))
     max_revenue: int = int(body.get("max_revenue", config.MAX_MONTHLY_REVENUE))
-    max_reviews: int = int(body.get("max_reviews", config.MAX_REVIEW_COUNT))
+    max_reviews = body.get("max_reviews")  # None = 上限なし
 
     if not category_id or category_id == "0":
         return jsonify({"error": "category_id が指定されていません"}), 400
@@ -348,7 +348,7 @@ def get_products():
                        if p["monthly_revenue"] is not None
                        and p["monthly_revenue"] >= min_revenue
                        and p["monthly_revenue"] <= max_revenue
-                       and (p["review_count"] is None or p["review_count"] <= max_reviews)]
+                       and (max_reviews is None or p["review_count"] is None or p["review_count"] <= max_reviews)]
             results.sort(key=lambda x: x["rank"] or 9999)
             return jsonify({
                 "products": results,
@@ -466,7 +466,7 @@ def get_products():
                 filtered_count += 1
                 continue
 
-            if review_count is not None and review_count > config.MAX_REVIEW_COUNT:
+            if config.MAX_REVIEW_COUNT is not None and review_count is not None and review_count > config.MAX_REVIEW_COUNT:
                 filtered_count += 1
                 continue
 
