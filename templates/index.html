@@ -29,6 +29,12 @@
     }
     header h1 { font-size: 1.2rem; font-weight: 700; letter-spacing: .02em; }
     header h1 span { color: #ff9900; }
+    #export-all-btn {
+      padding: 6px 14px; font-size: .82rem; font-weight: 600;
+      background: #ff9900; color: #1a1a2e; border: none;
+      border-radius: 6px; cursor: pointer; white-space: nowrap;
+    }
+    #export-all-btn:hover { background: #ffb347; }
     #token-badge {
       font-size: .8rem;
       background: rgba(255,153,0,.15);
@@ -388,6 +394,7 @@
 
 <header>
   <h1>Amazon.co.jp <span>リサーチツール</span></h1>
+  <button id="export-all-btn" onclick="exportAllCSV()">⬇ 全カテゴリ一括ダウンロード</button>
   <div id="token-badge">トークン: 読込中...</div>
 </header>
 
@@ -756,6 +763,10 @@ function renderProducts(data, categoryId, categoryName) {
 
 let _currentProducts = [];
 let _currentCategoryName = "";
+
+function exportAllCSV() {
+  window.location.href = "/api/export/csv";
+}
 
 function downloadCSV() {
   if (!_currentProducts.length) return;

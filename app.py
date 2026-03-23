@@ -662,6 +662,56 @@ def add_favorite():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/export/csv", methods=["GET"])
+def export_csv():
+    """フィルタ済み全商品をCSV形式でダウンロードする。
+    クエリパラメータ: min_revenue, max_revenue
+    """
+    import io, csv
+    from flask import Response
+
+    init_db()
+    min_revenue = int(request.args.get("min_revenue", config.MIN_MONTHLY_REVENUE))
+    max_revenue = int(request.args.get("max_revenue", config.MAX_MONTHLY_REVENUE))
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT category_name, asin, title,
+                   price_jpy, review_count, rank,
+                   monthly_sold, monthly_revenue, amazon_url, fetched_at
+            FROM products
+            WHERE monthly_revenue BETWEEN ? AND ?
+            ORDER BY category_name, monthly_revenue DESC
+        """, (min_revenue, max_revenue))
+        rows = cur.fetchall()
+        conn.close()
+
+        if config.MAX_REVIEW_COUNT is not None:
+            rows = [r for r in rows if r[4] is None or r[4] <= config.MAX_REVIEW_COUNT]
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    # BOM付きUTF-8（Excelで開くため）
+    output.write("\ufeff")
+    writer.writerow(["カテゴリ", "ASIN", "商品名", "価格(円)", "レビュー数",
+                     "ランク", "月間販売数", "月間売上推定(円)", "AmazonURL", "取得日時"])
+    for r in rows:
+        writer.writerow(r)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    filename = f"amazon_research_{today}.csv"
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv; charset=utf-8-sig",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+    )
+
+
 @app.route("/api/favorites/<category_id>", methods=["DELETE"])
 def remove_favorite(category_id):
     """お気に入りカテゴリを解除する"""
