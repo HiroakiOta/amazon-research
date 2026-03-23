@@ -160,7 +160,13 @@
     .badge-green { background: #e8f5e9; color: #2e7d32; }
     .badge-orange{ background: #fff3e0; color: #e65100; }
     .badge-gray  { background: #f5f5f5; color: #666; }
-    .filter-bar .stat { margin-left: auto; font-size: .82rem; color: #888; }
+    .filter-bar .stat { font-size: .82rem; color: #888; }
+    .dl-btn {
+      margin-left: auto; padding: 4px 12px; font-size: .82rem;
+      background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7;
+      border-radius: 6px; cursor: pointer; white-space: nowrap;
+    }
+    .dl-btn:hover { background: #c8e6c9; }
 
     /* ローディング */
     .loading {
@@ -677,6 +683,8 @@ async function toggleFavorite(categoryId, categoryName, btn) {
 function renderProducts(data, categoryId, categoryName) {
   const main = $("main-content");
   const { products, total, total_fetched, filtered_count, from_cache } = data;
+  _currentProducts = products;
+  _currentCategoryName = categoryName;
 
   const cacheLabel = from_cache
     ? '<span class="badge badge-gray">📦 キャッシュ</span>'
@@ -697,7 +705,8 @@ function renderProducts(data, categoryId, categoryName) {
       <span class="badge badge-green">条件一致: ${total}件</span>
       <span class="badge badge-gray">フィルタ除外: ${filtered_count}件</span>
       ${cacheLabel}
-      <span class="stat">フィルタ: レビュー≤300件 ／ 月間売上10万〜100万円</span>
+      <span class="stat">フィルタ: 月間売上10万〜100万円</span>
+      <button class="dl-btn" onclick="downloadCSV()">CSV ダウンロード</button>
     </div>
     ${favBtnHtml}`;
 
@@ -743,6 +752,31 @@ function renderProducts(data, categoryId, categoryName) {
 
   cardsHtml += '</div>';
   main.innerHTML = filterHtml + cardsHtml;
+}
+
+let _currentProducts = [];
+let _currentCategoryName = "";
+
+function downloadCSV() {
+  if (!_currentProducts.length) return;
+  const headers = ["ASIN", "商品名", "価格(円)", "レビュー数", "ランク", "月間売上推定(円)", "AmazonURL"];
+  const rows = _currentProducts.map(p => [
+    p.asin,
+    `"${(p.title || "").replace(/"/g, '""')}"`,
+    p.price_jpy ?? "",
+    p.review_count ?? "",
+    p.rank ?? "",
+    p.monthly_revenue ?? "",
+    p.amazon_url,
+  ]);
+  const csv = "\uFEFF" + [headers, ...rows].map(r => r.join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${_currentCategoryName}_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function escHtml(s) {
