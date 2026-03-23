@@ -1,8 +1,9 @@
 import math
 import traceback
 import sqlite3
+import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import Flask, jsonify, render_template, request
 
@@ -67,6 +68,10 @@ def init_db():
         category_id TEXT UNIQUE,
         category_name TEXT,
         added_at TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS category_lookup_cache (
+        category_id TEXT PRIMARY KEY,
+        result_json TEXT,
+        cached_at TEXT)""")
 
     # デフォルトお気に入り：テーブルが空の場合のみ挿入
     cur.execute("SELECT COUNT(*) FROM favorite_categories")
@@ -121,26 +126,56 @@ def _find_in_result(result: dict, category_id) -> dict | None:
     return None
 
 
-_root_cat_cache: dict = {}        # category_lookup(0) の結果をキャッシュ
-_cat_lookup_cache: dict = {}      # category_lookup(id) の結果をキャッシュ（id → result）
+_cat_lookup_cache: dict = {}      # L1: インメモリキャッシュ（category_id → result）
 
-
-def _get_root_result() -> dict:
-    """category_lookup(0, domain=JP) の結果をキャッシュして返す。
-    JP ドメインで特定 ID を直接 lookup すると空が返る場合でも
-    id=0 ならルートカテゴリ一覧が確実に返る。"""
-    global _root_cat_cache
-    if not _root_cat_cache:
-        _root_cat_cache = get_api().category_lookup(0, domain=config.DOMAIN)
-    return _root_cat_cache
+CAT_CACHE_TTL_DAYS = 7            # SQLiteキャッシュの有効期間
 
 
 def _cached_category_lookup(category_id: int) -> dict:
-    """category_lookup の結果をインメモリにキャッシュして返す。"""
+    """category_lookup の結果を L1（メモリ）→ L2（SQLite）→ API の順で取得・キャッシュする。"""
     key = str(category_id)
-    if key not in _cat_lookup_cache:
-        _cat_lookup_cache[key] = get_api().category_lookup(category_id, domain=config.DOMAIN)
-    return _cat_lookup_cache[key]
+
+    # L1: メモリキャッシュ
+    if key in _cat_lookup_cache:
+        return _cat_lookup_cache[key]
+
+    # L2: SQLiteキャッシュ
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT result_json, cached_at FROM category_lookup_cache WHERE category_id=?", (key,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            cached_at = datetime.fromisoformat(row[1])
+            if datetime.now() - cached_at < timedelta(days=CAT_CACHE_TTL_DAYS):
+                result = json.loads(row[0])
+                _cat_lookup_cache[key] = result
+                return result
+    except Exception:
+        pass
+
+    # API呼び出し
+    result = get_api().category_lookup(category_id, domain=config.DOMAIN)
+    _cat_lookup_cache[key] = result
+
+    # SQLiteに保存
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("""INSERT OR REPLACE INTO category_lookup_cache (category_id, result_json, cached_at)
+                       VALUES (?, ?, ?)""", (key, json.dumps(result), datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+    return result
+
+
+def _get_root_result() -> dict:
+    """category_lookup(0, domain=JP) をキャッシュして返す。"""
+    return _cached_category_lookup(0)
 
 
 # 内部管理用カテゴリ名（これに該当する場合は子階層に自動的に潜る）
