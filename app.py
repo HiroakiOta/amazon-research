@@ -56,10 +56,15 @@ def init_db():
     cur = conn.cursor()
     cur.execute("""CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        category_id TEXT, category_name TEXT, asin TEXT, title TEXT,
+        category_id TEXT, category_name TEXT, asin TEXT, parent_asin TEXT, title TEXT,
         image_url TEXT, price_jpy INTEGER, review_count INTEGER,
         rank INTEGER, monthly_sold INTEGER, monthly_revenue INTEGER,
         amazon_url TEXT, fetched_at TEXT)""")
+    # 既存テーブルへの列追加（初回のみ実行、エラーは無視）
+    try:
+        cur.execute("ALTER TABLE products ADD COLUMN parent_asin TEXT")
+    except Exception:
+        pass
     cur.execute("""CREATE TABLE IF NOT EXISTS batch_state (
         id INTEGER PRIMARY KEY, last_index INTEGER DEFAULT 0, last_run TEXT)""")
     cur.execute("INSERT OR IGNORE INTO batch_state (id, last_index) VALUES (1, 0)")
@@ -264,6 +269,15 @@ def safe_get(lst, idx, default=None):
         return default
 
 
+PARENT_REVENUE_CTE = """
+    WITH parent_revenue AS (
+        SELECT COALESCE(parent_asin, asin) AS p_asin,
+               SUM(monthly_revenue) AS total_revenue
+        FROM products
+        GROUP BY p_asin
+    )
+"""
+
 def estimate_monthly_revenue(monthly_sold: int, price_jpy: float, rank: int) -> float | None:
     """
     月間売上推定 (円)
@@ -366,9 +380,15 @@ def get_products():
         if cached:
             conn = sqlite3.connect(DB_PATH)
             cur = conn.cursor()
-            cur.execute("""SELECT asin, title, image_url, price_jpy, review_count,
-                           rank, monthly_sold, monthly_revenue, amazon_url
-                           FROM products WHERE category_id=?""", (category_id,))
+            # 親ASIN単位の売上合算でフィルタ
+            cur.execute(PARENT_REVENUE_CTE + """
+                SELECT p.asin, p.title, p.image_url, p.price_jpy, p.review_count,
+                       p.rank, p.monthly_sold, p.monthly_revenue, p.amazon_url,
+                       COALESCE(p.parent_asin, p.asin) AS p_asin, pr.total_revenue
+                FROM products p
+                JOIN parent_revenue pr ON COALESCE(p.parent_asin, p.asin) = pr.p_asin
+                WHERE p.category_id=?
+            """, (category_id,))
             rows = cur.fetchall()
             conn.close()
             all_products = []
@@ -378,11 +398,12 @@ def get_products():
                     "price_jpy": row[3], "review_count": row[4],
                     "rank": row[5], "monthly_sold": row[6],
                     "monthly_revenue": row[7], "amazon_url": row[8],
+                    "parent_asin": row[9], "parent_revenue": row[10],
                 })
             results = [p for p in all_products
-                       if p["monthly_revenue"] is not None
-                       and p["monthly_revenue"] >= min_revenue
-                       and p["monthly_revenue"] <= max_revenue
+                       if p["parent_revenue"] is not None
+                       and p["parent_revenue"] >= min_revenue
+                       and p["parent_revenue"] <= max_revenue
                        and (max_reviews is None or p["review_count"] is None or p["review_count"] <= max_reviews)]
             results.sort(key=lambda x: x["rank"] or 9999)
             return jsonify({
@@ -677,19 +698,21 @@ def export_csv():
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        cur.execute("""
-            SELECT category_name, asin, title,
-                   price_jpy, review_count, rank,
-                   monthly_sold, monthly_revenue, amazon_url, fetched_at
-            FROM products
-            WHERE monthly_revenue BETWEEN ? AND ?
-            ORDER BY category_name, monthly_revenue DESC
+        cur.execute(PARENT_REVENUE_CTE + """
+            SELECT p.category_name, p.asin, COALESCE(p.parent_asin, p.asin), p.title,
+                   p.price_jpy, p.review_count, p.rank,
+                   p.monthly_sold, p.monthly_revenue, pr.total_revenue,
+                   p.amazon_url, p.fetched_at
+            FROM products p
+            JOIN parent_revenue pr ON COALESCE(p.parent_asin, p.asin) = pr.p_asin
+            WHERE pr.total_revenue BETWEEN ? AND ?
+            ORDER BY p.category_name, pr.total_revenue DESC
         """, (min_revenue, max_revenue))
         rows = cur.fetchall()
         conn.close()
 
         if config.MAX_REVIEW_COUNT is not None:
-            rows = [r for r in rows if r[4] is None or r[4] <= config.MAX_REVIEW_COUNT]
+            rows = [r for r in rows if r[5] is None or r[5] <= config.MAX_REVIEW_COUNT]
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -698,8 +721,8 @@ def export_csv():
     writer = csv.writer(output)
     # BOM付きUTF-8（Excelで開くため）
     output.write("\ufeff")
-    writer.writerow(["カテゴリ", "ASIN", "商品名", "価格(円)", "レビュー数",
-                     "ランク", "月間販売数", "月間売上推定(円)", "AmazonURL", "取得日時"])
+    writer.writerow(["カテゴリ", "ASIN", "親ASIN", "商品名", "価格(円)", "レビュー数",
+                     "ランク", "月間販売数", "月間売上推定(円)", "親ASIN合算売上(円)", "AmazonURL", "取得日時"])
     for r in rows:
         writer.writerow(r)
 
