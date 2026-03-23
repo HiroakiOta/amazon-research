@@ -61,7 +61,7 @@ def init_db():
         rank INTEGER, monthly_sold INTEGER, monthly_revenue INTEGER,
         amazon_url TEXT, fetched_at TEXT)""")
     # 既存テーブルへの列追加（初回のみ実行、エラーは無視）
-    for col in ["parent_asin TEXT", "category_tree_json TEXT"]:
+    for col in ["parent_asin TEXT", "category_tree_json TEXT", "leaf_rank INTEGER"]:
         try:
             cur.execute(f"ALTER TABLE products ADD COLUMN {col}")
         except Exception:
@@ -687,7 +687,7 @@ def add_favorite():
 @app.route("/api/export/csv", methods=["GET"])
 def export_csv():
     """フィルタ済み全商品をCSV形式でダウンロードする。
-    クエリパラメータ: min_revenue, max_revenue
+    クエリパラメータ: min_revenue, max_revenue, min_price
     """
     import io, csv
     from flask import Response
@@ -695,6 +695,7 @@ def export_csv():
     init_db()
     min_revenue = int(request.args.get("min_revenue", config.MIN_MONTHLY_REVENUE))
     max_revenue = int(request.args.get("max_revenue", config.MAX_MONTHLY_REVENUE))
+    min_price   = int(request.args.get("min_price", 0))
 
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -702,14 +703,15 @@ def export_csv():
         cur.execute(PARENT_REVENUE_CTE + """
             SELECT p.category_name, p.category_tree_json,
                    p.asin, COALESCE(p.parent_asin, p.asin), p.title,
-                   p.price_jpy, p.review_count, p.rank,
+                   p.price_jpy, p.review_count, p.rank, p.leaf_rank,
                    p.monthly_sold, p.monthly_revenue, pr.total_revenue,
                    p.amazon_url, p.fetched_at
             FROM products p
             JOIN parent_revenue pr ON COALESCE(p.parent_asin, p.asin) = pr.p_asin
             WHERE pr.total_revenue BETWEEN ? AND ?
+              AND (? = 0 OR p.price_jpy IS NULL OR p.price_jpy >= ?)
             ORDER BY p.category_name, pr.total_revenue DESC
-        """, (min_revenue, max_revenue))
+        """, (min_revenue, max_revenue, min_price, min_price))
         rows = cur.fetchall()
         conn.close()
 
@@ -737,13 +739,20 @@ def export_csv():
     output.write("\ufeff")
     writer.writerow(["大カテゴリ", "カテゴリパス", "末端カテゴリ",
                      "ASIN", "親ASIN", "商品名", "価格(円)", "レビュー数",
-                     "ランク", "月間販売数", "月間売上推定(円)", "親ASIN合算売上(円)",
+                     "大カテゴリランク", "末端カテゴリランク",
+                     "月間販売数", "月間売上推定(円)", "親ASIN合算売上(円)",
                      "AmazonURL", "取得日時"])
     for r in rows:
         root_name = r[0]
         tree_json  = r[1]
         cat_path, leaf_cat = parse_tree(tree_json, root_name)
-        writer.writerow([root_name, cat_path, leaf_cat] + list(r[2:]))
+        # r: category_name, tree_json, asin, parent_asin, title,
+        #    price_jpy, review_count, rank, leaf_rank,
+        #    monthly_sold, monthly_revenue, total_revenue, amazon_url, fetched_at
+        writer.writerow([root_name, cat_path, leaf_cat,
+                         r[2], r[3], r[4], r[5], r[6],
+                         r[7], r[8],
+                         r[9], r[10], r[11], r[12], r[13]])
 
     today = datetime.now().strftime("%Y-%m-%d")
     filename = f"amazon_research_{today}.csv"

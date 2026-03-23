@@ -29,6 +29,14 @@
     }
     header h1 { font-size: 1.2rem; font-weight: 700; letter-spacing: .02em; }
     header h1 span { color: #ff9900; }
+    #price-filter-wrap {
+      display: flex; align-items: center; gap: 6px; font-size: .82rem; color: #ddd;
+    }
+    #price-filter-wrap label { white-space: nowrap; }
+    #min-price-input {
+      width: 90px; padding: 4px 8px; border-radius: 6px; border: 1px solid #555;
+      background: #2a3a4a; color: #fff; font-size: .82rem; text-align: right;
+    }
     #export-all-btn {
       padding: 6px 14px; font-size: .82rem; font-weight: 600;
       background: #ff9900; color: #1a1a2e; border: none;
@@ -394,6 +402,11 @@
 
 <header>
   <h1>Amazon.co.jp <span>リサーチツール</span></h1>
+  <div id="price-filter-wrap">
+    <label for="min-price-input">単価下限</label>
+    <input id="min-price-input" type="number" min="0" step="100" placeholder="0" value="0">
+    <span>円以上</span>
+  </div>
   <button id="export-all-btn" onclick="exportAllCSV()">⬇ 全カテゴリ一括ダウンロード</button>
   <div id="token-badge">トークン: 読込中...</div>
 </header>
@@ -722,12 +735,27 @@ function renderProducts(data, categoryId, categoryName) {
     return;
   }
 
-  let cardsHtml = '<div class="products-grid">';
+  main.innerHTML = filterHtml + '<div id="products-grid-wrap"></div>';
+  renderProductCards(products);
+}
 
+function renderProductCards(products) {
+  const wrap = document.getElementById("products-grid-wrap");
+  if (!wrap) return;
+
+  if (products.length === 0) {
+    wrap.innerHTML = '<div class="empty-msg">条件に合う商品が見つかりませんでした。</div>';
+    return;
+  }
+
+  let cardsHtml = '<div class="products-grid">';
   products.forEach(p => {
     const imgHtml = p.image_url
       ? `<img src="${p.image_url}" alt="${escHtml(p.title)}" loading="lazy" onerror="this.parentElement.innerHTML='<div class=no-img>📦</div>'">`
       : '<div class="no-img">📦</div>';
+    const leafRankHtml = p.leaf_rank != null
+      ? `<div class="meta-item"><span class="meta-label">末端ランク</span><span class="meta-value rank">#${fmt_num(p.leaf_rank)}</span></div>`
+      : '';
 
     cardsHtml += `
       <div class="product-card">
@@ -740,9 +768,10 @@ function renderProducts(data, categoryId, categoryName) {
               <span class="meta-value price">${fmt_price(p.price_jpy)}</span>
             </div>
             <div class="meta-item">
-              <span class="meta-label">ランク</span>
+              <span class="meta-label">大カテゴリランク</span>
               <span class="meta-value rank">${p.rank != null ? '#' + fmt_num(p.rank) : '—'}</span>
             </div>
+            ${leafRankHtml}
             <div class="meta-item">
               <span class="meta-label">レビュー</span>
               <span class="meta-value">${fmt_num(p.review_count)}</span>
@@ -758,14 +787,34 @@ function renderProducts(data, categoryId, categoryName) {
   });
 
   cardsHtml += '</div>';
-  main.innerHTML = filterHtml + cardsHtml;
+  wrap.innerHTML = cardsHtml;
 }
 
 let _currentProducts = [];
 let _currentCategoryName = "";
 
+function getMinPrice() {
+  return parseInt(document.getElementById("min-price-input").value || "0", 10) || 0;
+}
+
 function exportAllCSV() {
-  window.location.href = "/api/export/csv";
+  const minPrice = getMinPrice();
+  window.location.href = `/api/export/csv${minPrice > 0 ? "?min_price=" + minPrice : ""}`;
+}
+
+// 価格フィルタ変更時に表示中の商品を再フィルタ
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("min-price-input").addEventListener("input", () => {
+    if (_currentProducts.length > 0) applyPriceFilter();
+  });
+});
+
+function applyPriceFilter() {
+  const minPrice = getMinPrice();
+  const filtered = minPrice > 0
+    ? _currentProducts.filter(p => p.price_jpy == null || p.price_jpy >= minPrice)
+    : _currentProducts;
+  renderProductCards(filtered);
 }
 
 function downloadCSV() {

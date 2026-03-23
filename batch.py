@@ -165,6 +165,14 @@ def fetch_and_save(api, cat):
             asin = product.get("asin", "")
             parent_asin = product.get("parentAsin") or asin
             category_tree_json = json.dumps(product.get("categoryTree") or [], ensure_ascii=False)
+            # 末端カテゴリランク（大カテゴリ以外の salesRanks から取得）
+            root_cat_id = str(product.get("salesRankReference", "") or "")
+            sales_ranks = product.get("salesRanks") or {}
+            leaf_rank = None
+            for cat_id, rank_data in sales_ranks.items():
+                if str(cat_id) != root_cat_id and rank_data and len(rank_data) >= 2:
+                    leaf_rank = int(rank_data[1]) if rank_data[1] else None
+                    break
             monthly_sold = product.get("monthlySold") or 0
             # 月間売上推定: 実売上数が取得できた場合は優先、なければランク推定
             monthly_revenue = None
@@ -177,7 +185,7 @@ def fetch_and_save(api, cat):
                 asin, parent_asin, category_tree_json,
                 product.get("title") or "商品名不明",
                 build_image_url(product.get("imagesCSV", "")),
-                price_jpy, review_count, rank,
+                price_jpy, review_count, rank, leaf_rank,
                 monthly_sold,
                 monthly_revenue,
                 f"https://www.amazon.co.jp/dp/{asin}",
@@ -188,9 +196,9 @@ def fetch_and_save(api, cat):
         cur.execute("DELETE FROM products WHERE category_id=?", (cat["id"],))
         cur.executemany("""INSERT INTO products
             (category_id, category_name, asin, parent_asin, category_tree_json,
-             title, image_url, price_jpy, review_count, rank,
+             title, image_url, price_jpy, review_count, rank, leaf_rank,
              monthly_sold, monthly_revenue, amazon_url, fetched_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
         conn.commit()
         conn.close()
         print(f"    保存完了: {len(rows)}件")
