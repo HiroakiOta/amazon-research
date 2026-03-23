@@ -4,7 +4,7 @@ import config, keepa
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
 
-BATCH_SIZE = 10
+BATCH_SIZE = 2  # 1回のバッチで処理するカテゴリ数（お気に入り数に合わせて調整）
 
 _INTERNAL_CAT_NAMES = {
     "arborist merchandising root",
@@ -40,6 +40,12 @@ def init_db():
         category_id TEXT UNIQUE,
         category_name TEXT,
         added_at TEXT)""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS leaf_categories_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        parent_id TEXT,
+        category_id TEXT,
+        category_name TEXT,
+        cached_at TEXT)""")
     conn.commit()
     conn.close()
 
@@ -60,7 +66,6 @@ def save_last_index(idx):
     conn.close()
 
 def get_favorite_categories():
-    """SQLiteのfavorite_categoriesテーブルからカテゴリ一覧を取得する"""
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
@@ -71,68 +76,64 @@ def get_favorite_categories():
     except Exception:
         return []
 
-def expand_to_leaf_categories(api, category_id, category_name, depth=0):
-    """
-    指定カテゴリを末端カテゴリまで再帰展開して返す。
-    末端カテゴリ（has_children=False）のリストを返す。
-    depth上限=4（無限ループ防止）
-    """
-    if depth > 4:
-        return [{"id": category_id, "name": category_name}]
-
+def get_child_categories(api, category_id, category_name):
+    """1階層だけ子カテゴリを取得して返す。内部管理カテゴリはスキップ。"""
     try:
         result = api.category_lookup(int(category_id), domain=config.DOMAIN)
-        if not result:
-            return [{"id": category_id, "name": category_name}]
-
         cat_data = None
-        cat_id_str = str(category_id)
-        for k, v in result.items():
-            if isinstance(v, dict) and str(v.get("catId", "")) == cat_id_str:
+        for v in result.values():
+            if isinstance(v, dict) and str(v.get("catId", "")) == str(category_id):
                 cat_data = v
                 break
         if not cat_data:
             return [{"id": category_id, "name": category_name}]
 
-        children = cat_data.get("children", [])
+        children = cat_data.get("children", []) or []
         if not children:
             return [{"id": category_id, "name": category_name}]
 
-        leaf_cats = []
+        cats = []
         for child_id in children[:50]:
             child_data = result.get(str(child_id)) or result.get(child_id)
             if not child_data:
-                try:
-                    child_result = api.category_lookup(int(child_id), domain=config.DOMAIN)
-                    child_data = child_result.get(str(child_id)) or child_result.get(child_id)
-                except Exception:
-                    pass
-
-            if not child_data:
-                leaf_cats.append({"id": str(child_id), "name": f"カテゴリ {child_id}"})
+                cats.append({"id": str(child_id), "name": f"カテゴリ {child_id}"})
                 continue
-
             child_name = child_data.get("name", f"カテゴリ {child_id}")
-
             if child_name.lower() in _INTERNAL_CAT_NAMES:
-                leaf_cats.extend(
-                    expand_to_leaf_categories(api, str(child_id), child_name, depth + 1)
-                )
-                continue
-
-            child_children = child_data.get("children", [])
-            if child_children:
-                leaf_cats.extend(
-                    expand_to_leaf_categories(api, str(child_id), child_name, depth + 1)
-                )
+                # 内部カテゴリはその子を追加
+                for gc_id in (child_data.get("children") or [])[:50]:
+                    cats.append({"id": str(gc_id), "name": f"サブカテゴリ {gc_id}"})
             else:
-                leaf_cats.append({"id": str(child_id), "name": child_name})
-
-        return leaf_cats if leaf_cats else [{"id": category_id, "name": category_name}]
-
+                cats.append({"id": str(child_id), "name": child_name})
+        return cats if cats else [{"id": category_id, "name": category_name}]
     except Exception as e:
-        print(f"  カテゴリ展開エラー ({category_id}): {e}")
+        print(f"  子カテゴリ取得エラー ({category_id}): {e}")
         return [{"id": category_id, "name": category_name}]
+
+def get_target_categories(api, favorite_cats):
+    """
+    お気に入りカテゴリからバッチ対象カテゴリ一覧を作成する。
+    - best_sellers_query が成功するカテゴリはそのまま使用
+    - 失敗する場合のみ1階層展開して子カテゴリを使用
+    """
+    target_cats = []
+    for fav in favorite_cats:
+        print(f"  確認中: {fav['name']} ({fav['id']})")
+        try:
+            asins = api.best_sellers_query(fav["id"], domain=config.DOMAIN)
+            if asins:
+                print(f"    → 直接取得可能（ASIN {len(asins)}件）")
+                target_cats.append(fav)
+            else:
+                print(f"    → ベストセラーなし。子カテゴリを展開...")
+                children = get_child_categories(api, fav["id"], fav["name"])
+                print(f"    → 子カテゴリ {len(children)}件")
+                target_cats.extend(children)
+        except Exception as e:
+            print(f"    → エラー: {e}。子カテゴリを展開...")
+            children = get_child_categories(api, fav["id"], fav["name"])
+            target_cats.extend(children)
+    return target_cats
 
 def fetch_and_save(api, cat):
     """1カテゴリのベストセラーを取得してSQLiteに保存する"""
@@ -201,32 +202,27 @@ def main():
         print("お気に入りカテゴリが登録されていません。ブラウザからカテゴリを登録してください。")
         return
 
-    print("カテゴリを末端まで展開中...")
-    all_leaf_cats = []
-    for fav in favorite_cats:
-        print(f"  展開中: {fav['name']} ({fav['id']})")
-        leaves = expand_to_leaf_categories(api, fav["id"], fav["name"])
-        print(f"    → {len(leaves)}件の末端カテゴリ")
-        all_leaf_cats.extend(leaves)
+    print("バッチ対象カテゴリを確認中...")
+    target_cats = get_target_categories(api, favorite_cats)
 
     seen = set()
-    unique_leaf_cats = []
-    for cat in all_leaf_cats:
+    unique_cats = []
+    for cat in target_cats:
         if cat["id"] not in seen:
             seen.add(cat["id"])
-            unique_leaf_cats.append(cat)
+            unique_cats.append(cat)
 
-    print(f"\n末端カテゴリ合計: {len(unique_leaf_cats)}件")
+    print(f"\n対象カテゴリ合計: {len(unique_cats)}件")
 
     last_index = get_last_index()
     print(f"開始インデックス: {last_index}")
 
     for i in range(BATCH_SIZE):
-        idx = (last_index + i) % len(unique_leaf_cats)
-        cat = unique_leaf_cats[idx]
+        idx = (last_index + i) % len(unique_cats)
+        cat = unique_cats[idx]
         fetch_and_save(api, cat)
 
-    new_index = (last_index + BATCH_SIZE) % len(unique_leaf_cats)
+    new_index = (last_index + BATCH_SIZE) % len(unique_cats)
     save_last_index(new_index)
     print(f"\nバッチ完了。次回開始インデックス: {new_index}")
 
