@@ -61,10 +61,11 @@ def init_db():
         rank INTEGER, monthly_sold INTEGER, monthly_revenue INTEGER,
         amazon_url TEXT, fetched_at TEXT)""")
     # 既存テーブルへの列追加（初回のみ実行、エラーは無視）
-    try:
-        cur.execute("ALTER TABLE products ADD COLUMN parent_asin TEXT")
-    except Exception:
-        pass
+    for col in ["parent_asin TEXT", "category_tree_json TEXT"]:
+        try:
+            cur.execute(f"ALTER TABLE products ADD COLUMN {col}")
+        except Exception:
+            pass
     cur.execute("""CREATE TABLE IF NOT EXISTS batch_state (
         id INTEGER PRIMARY KEY, last_index INTEGER DEFAULT 0, last_run TEXT)""")
     cur.execute("INSERT OR IGNORE INTO batch_state (id, last_index) VALUES (1, 0)")
@@ -699,7 +700,8 @@ def export_csv():
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         cur.execute(PARENT_REVENUE_CTE + """
-            SELECT p.category_name, p.asin, COALESCE(p.parent_asin, p.asin), p.title,
+            SELECT p.category_name, p.category_tree_json,
+                   p.asin, COALESCE(p.parent_asin, p.asin), p.title,
                    p.price_jpy, p.review_count, p.rank,
                    p.monthly_sold, p.monthly_revenue, pr.total_revenue,
                    p.amazon_url, p.fetched_at
@@ -712,19 +714,36 @@ def export_csv():
         conn.close()
 
         if config.MAX_REVIEW_COUNT is not None:
-            rows = [r for r in rows if r[5] is None or r[5] <= config.MAX_REVIEW_COUNT]
+            rows = [r for r in rows if r[6] is None or r[6] <= config.MAX_REVIEW_COUNT]
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+    def parse_tree(tree_json, root_name):
+        """categoryTree JSON からカテゴリパスと末端カテゴリ名を返す。"""
+        if not tree_json:
+            return root_name, root_name
+        try:
+            tree = json.loads(tree_json)
+            names = [node.get("name", "") for node in tree if node.get("name")]
+            if not names:
+                return root_name, root_name
+            return " > ".join(names), names[-1]
+        except Exception:
+            return root_name, root_name
+
     output = io.StringIO()
     writer = csv.writer(output)
-    # BOM付きUTF-8（Excelで開くため）
     output.write("\ufeff")
-    writer.writerow(["カテゴリ", "ASIN", "親ASIN", "商品名", "価格(円)", "レビュー数",
-                     "ランク", "月間販売数", "月間売上推定(円)", "親ASIN合算売上(円)", "AmazonURL", "取得日時"])
+    writer.writerow(["大カテゴリ", "カテゴリパス", "末端カテゴリ",
+                     "ASIN", "親ASIN", "商品名", "価格(円)", "レビュー数",
+                     "ランク", "月間販売数", "月間売上推定(円)", "親ASIN合算売上(円)",
+                     "AmazonURL", "取得日時"])
     for r in rows:
-        writer.writerow(r)
+        root_name = r[0]
+        tree_json  = r[1]
+        cat_path, leaf_cat = parse_tree(tree_json, root_name)
+        writer.writerow([root_name, cat_path, leaf_cat] + list(r[2:]))
 
     today = datetime.now().strftime("%Y-%m-%d")
     filename = f"amazon_research_{today}.csv"

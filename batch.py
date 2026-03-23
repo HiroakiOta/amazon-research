@@ -1,4 +1,4 @@
-import sqlite3, os, math
+import sqlite3, os, math, json
 from datetime import datetime
 import config, keepa
 
@@ -164,6 +164,7 @@ def fetch_and_save(api, cat):
             price_jpy = round(price_raw * 100) if price_raw and price_raw > 0 else None
             asin = product.get("asin", "")
             parent_asin = product.get("parentAsin") or asin
+            category_tree_json = json.dumps(product.get("categoryTree") or [], ensure_ascii=False)
             monthly_sold = product.get("monthlySold") or 0
             # 月間売上推定: 実売上数が取得できた場合は優先、なければランク推定
             monthly_revenue = None
@@ -173,7 +174,7 @@ def fetch_and_save(api, cat):
                 monthly_revenue = int(2500 / math.sqrt(rank)) * price_jpy
             rows.append((
                 cat["id"], cat["name"],
-                asin, parent_asin,
+                asin, parent_asin, category_tree_json,
                 product.get("title") or "商品名不明",
                 build_image_url(product.get("imagesCSV", "")),
                 price_jpy, review_count, rank,
@@ -186,10 +187,10 @@ def fetch_and_save(api, cat):
         cur = conn.cursor()
         cur.execute("DELETE FROM products WHERE category_id=?", (cat["id"],))
         cur.executemany("""INSERT INTO products
-            (category_id, category_name, asin, parent_asin, title, image_url,
-             price_jpy, review_count, rank, monthly_sold, monthly_revenue,
-             amazon_url, fetched_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+            (category_id, category_name, asin, parent_asin, category_tree_json,
+             title, image_url, price_jpy, review_count, rank,
+             monthly_sold, monthly_revenue, amazon_url, fetched_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
         conn.commit()
         conn.close()
         print(f"    保存完了: {len(rows)}件")
