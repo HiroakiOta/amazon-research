@@ -72,18 +72,8 @@ def init_db():
     cur.execute("SELECT COUNT(*) FROM favorite_categories")
     if cur.fetchone()[0] == 0:
         default_categories = [
-            ("14304371",   "スポーツ&アウトドア"),
-            ("160384011",  "ドラッグストア"),
-            ("2127209051", "パソコン・周辺機器"),
-            ("86731051",   "文房具・オフィス用品"),
-            ("2017304051", "車&バイク"),
-            ("13299531",   "おもちゃ&ゲーム"),
-            ("2277724051", "家電・カメラ"),
-            ("3828871",    "ホーム&キッチン"),
-            ("2127211051", "ペット用品"),
-            ("16333571",   "ベビー&マタニティ"),
-            ("352484011",  "ファッション"),
-            ("3445393051", "産業・研究開発用品"),
+            ("2016926051", "スポーツ&アウトドア"),
+            ("2264620051", "DIY・工具・ガーデン"),
         ]
         now = datetime.now().isoformat()
         for cat_id, cat_name in default_categories:
@@ -131,7 +121,8 @@ def _find_in_result(result: dict, category_id) -> dict | None:
     return None
 
 
-_root_cat_cache: dict = {}   # category_lookup(0) の結果をキャッシュ
+_root_cat_cache: dict = {}        # category_lookup(0) の結果をキャッシュ
+_cat_lookup_cache: dict = {}      # category_lookup(id) の結果をキャッシュ（id → result）
 
 
 def _get_root_result() -> dict:
@@ -142,6 +133,14 @@ def _get_root_result() -> dict:
     if not _root_cat_cache:
         _root_cat_cache = get_api().category_lookup(0, domain=config.DOMAIN)
     return _root_cat_cache
+
+
+def _cached_category_lookup(category_id: int) -> dict:
+    """category_lookup の結果をインメモリにキャッシュして返す。"""
+    key = str(category_id)
+    if key not in _cat_lookup_cache:
+        _cat_lookup_cache[key] = get_api().category_lookup(category_id, domain=config.DOMAIN)
+    return _cat_lookup_cache[key]
 
 
 # 内部管理用カテゴリ名（これに該当する場合は子階層に自動的に潜る）
@@ -155,16 +154,25 @@ _INTERNAL_CAT_NAMES = {
 def fetch_subcategories(category_id: str) -> list[dict]:
     """指定カテゴリのサブカテゴリ一覧を返す。エラー時は空リスト。
 
-    親カテゴリを lookup して children ID を取得し、
-    各子カテゴリも個別に lookup して名前を取得する。
+    親のlookup結果に子データが含まれていれば再利用し（APIコール節約）、
+    含まれていない子のみ個別lookupする。結果はインメモリキャッシュに保存。
     内部管理用カテゴリ（Arborist Merchandising Root 等）は自動的にスキップして
     その子階層に潜る。
     """
-    try:
-        api = get_api()
+    def _resolve_cat(cat_id, parent_result: dict):
+        """parent_result から cat_id のデータを探し、なければキャッシュlookupする。"""
+        data = _find_in_result(parent_result, cat_id)
+        if not data:
+            try:
+                result = _cached_category_lookup(int(cat_id))
+                data = _find_in_result(result, cat_id)
+            except Exception:
+                pass
+        return data
 
-        # 親カテゴリを lookup
-        parent_result = api.category_lookup(int(category_id), domain=config.DOMAIN)
+    try:
+        # 親カテゴリを lookup（キャッシュ利用）
+        parent_result = _cached_category_lookup(int(category_id))
         parent_data = _find_in_result(parent_result, category_id)
 
         if not parent_data:
@@ -176,33 +184,18 @@ def fetch_subcategories(category_id: str) -> list[dict]:
 
         categories = []
         for child_id in children_ids[:30]:
-            child_name = f"サブカテゴリ {child_id}"
-            child_has_children = False
-            child_children_ids = []
+            child_data = _resolve_cat(child_id, parent_result)
+            child_name = (child_data.get("name") if child_data else None) or f"サブカテゴリ {child_id}"
+            child_children_ids = (child_data.get("children") or []) if child_data else []
+            child_has_children = len(child_children_ids) > 0
 
-            try:
-                child_result = api.category_lookup(int(child_id), domain=config.DOMAIN)
-                child_data = _find_in_result(child_result, child_id)
-                if child_data:
-                    child_name = child_data.get("name", child_name)
-                    child_children_ids = child_data.get("children") or []
-                    child_has_children = len(child_children_ids) > 0
-            except Exception:
-                pass
-
-            # 内部管理用カテゴリの場合は子階層に潜る
+            # 内部管理用カテゴリの場合は子階層に潜る（追加lookupは1回のみ）
             if child_name.lower() in _INTERNAL_CAT_NAMES:
+                child_result = _cached_category_lookup(int(child_id)) if child_data is None else parent_result
                 for grandchild_id in child_children_ids[:30]:
-                    gc_name = f"サブカテゴリ {grandchild_id}"
-                    gc_has_children = False
-                    try:
-                        gc_result = api.category_lookup(int(grandchild_id), domain=config.DOMAIN)
-                        gc_data = _find_in_result(gc_result, grandchild_id)
-                        if gc_data:
-                            gc_name = gc_data.get("name", gc_name)
-                            gc_has_children = len(gc_data.get("children", [])) > 0
-                    except Exception:
-                        pass
+                    gc_data = _resolve_cat(grandchild_id, child_result)
+                    gc_name = (gc_data.get("name") if gc_data else None) or f"サブカテゴリ {grandchild_id}"
+                    gc_has_children = len((gc_data.get("children") or []) if gc_data else []) > 0
                     categories.append({
                         "id": str(grandchild_id),
                         "name": gc_name,
