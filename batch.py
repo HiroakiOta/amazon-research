@@ -162,8 +162,12 @@ def fetch_and_save(api, cat):
                          sp_avg30.get("NEW") or sp_avg30.get("AMAZON") or
                          sp_avg180.get("NEW") or sp_avg180.get("AMAZON"))
             price_jpy = round(price_raw * 100) if price_raw and price_raw > 0 else None
+            monthly_sold = product.get("monthlySold") or 0
+            # 月間売上推定: 実売上数が取得できた場合は優先、なければランク推定
             monthly_revenue = None
-            if rank and rank > 0 and price_jpy:
+            if monthly_sold and monthly_sold > 0 and price_jpy:
+                monthly_revenue = monthly_sold * price_jpy
+            elif rank and rank > 0 and price_jpy:
                 monthly_revenue = int(2500 / math.sqrt(rank)) * price_jpy
             rows.append((
                 cat["id"], cat["name"],
@@ -171,7 +175,7 @@ def fetch_and_save(api, cat):
                 product.get("title") or "商品名不明",
                 build_image_url(product.get("imagesCSV", "")),
                 price_jpy, review_count, rank,
-                product.get("monthlySold") or 0,
+                monthly_sold,
                 monthly_revenue,
                 f"https://www.amazon.co.jp/dp/{product.get('asin','')}",
                 datetime.now().isoformat()
